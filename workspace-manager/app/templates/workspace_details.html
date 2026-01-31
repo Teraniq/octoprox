@@ -1,0 +1,12 @@
+<div class="row-details">
+  <h4>MCP endpoints</h4>
+  <p><strong>gitfs</strong></p>
+  <p>URL: {{ endpoint }}</p>
+  <button
+    type="button"
+    data-snippet='{{ snippet | tojson }}'
+    onclick="copySnippet(this)"
+  >
+    Copy mcp.json
+  </button>
+</div>

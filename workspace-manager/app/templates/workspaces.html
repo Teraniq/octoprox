@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Workspaces</h2>
+{% if message %}
+<div class="message">{{ message }}</div>
+{% endif %}
+{% if token %}
+<div class="token-box">{{ token }}</div>
+{% endif %}
+<form method="post" action="/workspaces">
+  <label>Workspace name</label>
+  <input
+    type="text"
+    name="name"
+    hx-get="/workspaces/validate"
+    hx-target="#name-check"
+    hx-trigger="keyup changed delay:300ms"
+    required
+  />
+  <span id="name-check"></span>
+  <button type="submit">Create</button>
+</form>
+<table>
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Status</th>
+      <th>Owner</th>
+      <th>Created</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for ws in workspaces %}
+    <tr>
+      <td>
+        <button
+          class="secondary"
+          type="button"
+          hx-get="/workspaces/{{ ws.id }}/details"
+          hx-target="#details-{{ ws.id }}"
+          hx-swap="innerHTML"
+        >
+          {{ ws.name }}
+        </button>
+      </td>
+      <td><span class="badge">{{ ws.status }}</span></td>
+      <td>{{ ws.user.username }}</td>
+      <td>{{ ws.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+      <td class="actions">
+        <form
+          method="post"
+          action="/workspaces/{{ ws.id }}/delete"
+          onsubmit="return confirmWorkspaceDelete('{{ ws.name }}')"
+        >
+          <button class="danger" type="submit">Delete</button>
+        </form>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="5">
+        <div id="details-{{ ws.id }}"></div>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}
