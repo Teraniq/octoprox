@@ -50,9 +50,13 @@ def require_login(request: Request) -> dict[str, Any]:
     return user
 
 
-def require_admin(request: Request) -> dict[str, Any]:
-    user = require_login(request)
-    if user.get("role") != "admin":
+def require_admin_user(request: Request, db: Session) -> User:
+    session_user = require_login(request)
+    user = db.execute(select(User).where(User.id == session_user["id"])).scalar_one_or_none()
+    if not user or user.status != "active":
+        request.session.clear()
+        raise HTTPException(status_code=status.HTTP_303_SEE_OTHER, headers={"Location": "/login"})
+    if user.role != "admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     return user
 
@@ -306,7 +310,7 @@ def admin_users_page(
     request: Request,
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
-    session_user = require_admin(request)
+    session_user = require_admin_user(request, db)
     users = db.execute(select(User).order_by(User.created_at.desc())).scalars().all()
     return templates.TemplateResponse(
         "admin_users.html",
@@ -327,7 +331,7 @@ def create_user(
     role: str = Form("user"),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
-    require_admin(request)
+    require_admin_user(request, db)
     existing = db.execute(select(User).where(User.username == username)).scalar_one_or_none()
     if existing:
         request.session["message"] = "User already exists."
@@ -345,7 +349,7 @@ def deactivate_user(
     user_id: int,
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
-    require_admin(request)
+    require_admin_user(request, db)
     user = db.execute(select(User).where(User.id == user_id)).scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404)
