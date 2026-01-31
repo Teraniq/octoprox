@@ -1,0 +1,53 @@
+version: "3.8"
+
+services:
+  traefik:
+    image: traefik:v3.1
+    command:
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:8080"
+    ports:
+      - "8080:8080"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+    networks:
+      - mcpnet
+
+  workspace-manager:
+    build: ./workspace-manager
+    container_name: workspace-manager
+    environment:
+      - DATABASE_URL=sqlite:///./data/manager.db
+      - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-http://localhost:8080}
+      - SECRET_KEY=${SECRET_KEY:-change-me}
+      - BOOTSTRAP_ADMIN_USERNAME=${BOOTSTRAP_ADMIN_USERNAME:-admin}
+      - BOOTSTRAP_ADMIN_PASSWORD=${BOOTSTRAP_ADMIN_PASSWORD:-admin}
+      - WORKSPACE_IMAGE=mcp-gitfs:latest
+      - DOCKER_NETWORK=mcpnet
+    volumes:
+      - manager-data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.manager.rule=PathPrefix(`/app`) && !PathPrefix(`/app/internal`)"
+      - "traefik.http.routers.manager.entrypoints=web"
+      - "traefik.http.routers.manager.middlewares=manager-stripprefix"
+      - "traefik.http.middlewares.manager-stripprefix.stripprefix.prefixes=/app"
+      - "traefik.http.services.manager.loadbalancer.server.port=8000"
+    networks:
+      - mcpnet
+
+  mcp-gitfs:
+    image: mcp-gitfs:latest
+    build: ./workspace-mcp
+    profiles: ["build"]
+    networks:
+      - mcpnet
+
+volumes:
+  manager-data:
+
+networks:
+  mcpnet:
+    name: mcpnet

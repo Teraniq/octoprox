@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>API Keys</h2>
+{% if message %}
+<div class="message">{{ message }}</div>
+{% endif %}
+{% if token %}
+<div class="token-box">{{ token }}</div>
+{% endif %}
+<form method="post" action="/keys">
+  <button type="submit">Create API Key</button>
+</form>
+<table>
+  <thead>
+    <tr>
+      <th>Prefix</th>
+      {% if is_admin %}<th>User</th>{% endif %}
+      <th>Created</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for key in keys %}
+    <tr>
+      <td>{{ key.key_prefix }}</td>
+      {% if is_admin %}<td>{{ key.user.username }}</td>{% endif %}
+      <td>{{ key.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+      <td class="actions">
+        <form
+          method="post"
+          action="/keys/{{ key.id }}/delete"
+          onsubmit="return confirmDelete('Delete API key {{ key.key_prefix }}?')"
+        >
+          <button class="danger" type="submit">Delete</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

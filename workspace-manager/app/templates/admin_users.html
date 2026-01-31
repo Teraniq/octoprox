@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Users</h2>
+{% if message %}
+<div class="message">{{ message }}</div>
+{% endif %}
+<form method="post" action="/admin/users">
+  <label>Username</label>
+  <input type="text" name="username" required />
+  <label>Password</label>
+  <input type="password" name="password" required />
+  <label>Role</label>
+  <select name="role">
+    <option value="user">User</option>
+    <option value="admin">Admin</option>
+  </select>
+  <button type="submit">Create</button>
+</form>
+<table>
+  <thead>
+    <tr>
+      <th>Username</th>
+      <th>Role</th>
+      <th>Status</th>
+      <th>Created</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for usr in users %}
+    <tr>
+      <td>{{ usr.username }}</td>
+      <td>{{ usr.role }}</td>
+      <td>{{ usr.status }}</td>
+      <td>{{ usr.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+      <td class="actions">
+        <form
+          method="post"
+          action="/admin/users/{{ usr.id }}/deactivate"
+          onsubmit="return confirmDelete('Deactivate user {{ usr.username }}?')"
+        >
+          <button class="danger" type="submit" {% if usr.status == "inactive" %}disabled{% endif %}>
+            Deactivate
+          </button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}
