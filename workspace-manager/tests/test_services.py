@@ -99,3 +99,25 @@ def test_user_deactivation_stops_workspaces_and_hides_them() -> None:
     assert user.status == "inactive"
     statuses = [ws.status for ws in db.query(Workspace).all()]
     assert statuses == ["inactive", "inactive"]
+
+
+def test_deactivate_user_commits_even_if_provisioner_fails() -> None:
+    class FailingProvisioner(FakeProvisioner):
+        def delete_workspace(self, workspace: Workspace) -> None:
+            super().delete_workspace(workspace)
+            raise RuntimeError("Docker error")
+
+    db = build_session()
+    user = User(username="user5", password_hash=auth.hash_password("pass"), role="user")
+    db.add(user)
+    db.commit()
+    ws1 = Workspace(user_id=user.id, name="ws1")
+    db.add(ws1)
+    db.commit()
+    provisioner = FailingProvisioner()
+    services.deactivate_user(db, provisioner, user)
+    db.refresh(user)
+    assert user.status == "inactive"
+    status = db.query(Workspace).one().status
+    assert status == "inactive"
+

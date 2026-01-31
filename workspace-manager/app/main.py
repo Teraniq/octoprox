@@ -349,10 +349,22 @@ def deactivate_user(
     user_id: int,
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
-    require_admin_user(request, db)
+    current_admin = require_admin_user(request, db)
     user = db.execute(select(User).where(User.id == user_id)).scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404)
+    if user.id == current_admin.id:
+        raise HTTPException(status_code=400, detail="Admins cannot deactivate their own account.")
+    if user.role == "admin":
+        remaining_admin = db.execute(
+            select(User).where(
+                User.role == "admin",
+                User.status == "active",
+                User.id != user.id,
+            )
+        ).scalar_one_or_none()
+        if not remaining_admin:
+            raise HTTPException(status_code=400, detail="Cannot deactivate the last active admin.")
     provisioner = WorkspaceProvisioner()
     services.deactivate_user(db, provisioner, user)
     request.session["message"] = f"User '{user.username}' deactivated."

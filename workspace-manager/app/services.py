@@ -111,10 +111,14 @@ def deactivate_user(
         if workspace.status == "active":
             workspace.status = "inactive"
             workspace.deleted_at = datetime.utcnow()
-        provisioner.delete_workspace(workspace)
     user.status = "inactive"
     db.add(user)
     db.commit()
+    for workspace in workspaces:
+        try:
+            provisioner.delete_workspace(workspace)
+        except Exception:
+            continue
 
 
 def introspect_token(db: Session, token: str) -> dict:
