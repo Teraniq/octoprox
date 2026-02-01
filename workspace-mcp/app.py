@@ -440,7 +440,7 @@ GITLAB_TOOL_HELP_OUTPUT_SCHEMA = {
 }
 
 
-@mcp.tool(outputSchema=GITLAB_OPENAPI_SPEC_OUTPUT_SCHEMA)
+@mcp.tool()
 def gitlab_openapi_spec() -> dict[str, Any]:
     _require_owner()
     return {
@@ -452,7 +452,7 @@ def gitlab_openapi_spec() -> dict[str, Any]:
     }
 
 
-@mcp.tool(outputSchema=GITLAB_OPENAPI_PATHS_OUTPUT_SCHEMA)
+@mcp.tool()
 def gitlab_openapi_paths() -> dict[str, Any]:
     _require_owner()
     return {
@@ -463,7 +463,7 @@ def gitlab_openapi_paths() -> dict[str, Any]:
     }
 
 
-@mcp.tool(outputSchema=GITLAB_OPENAPI_OPERATION_OUTPUT_SCHEMA)
+@mcp.tool()
 def gitlab_openapi_operation() -> dict[str, Any]:
     _require_owner()
     return {
@@ -477,7 +477,7 @@ def gitlab_openapi_operation() -> dict[str, Any]:
     }
 
 
-@mcp.tool(execution={"taskSupport": "forbidden"})
+@mcp.tool()
 def fs_list(path: str = ".") -> list[str]:
     _require_owner()
     target = _resolve_path(path)
@@ -486,7 +486,7 @@ def fs_list(path: str = ".") -> list[str]:
     return [entry.name for entry in target.iterdir()]
 
 
-@mcp.tool(execution={"taskSupport": "forbidden"})
+@mcp.tool()
 def fs_read_text(path: str, max_bytes: int = 200000) -> str:
     _require_owner()
     target = _resolve_path(path)
@@ -496,7 +496,7 @@ def fs_read_text(path: str, max_bytes: int = 200000) -> str:
     return data.decode("utf-8", errors="replace")
 
 
-@mcp.tool(execution={"taskSupport": "forbidden"})
+@mcp.tool()
 def fs_write_text(path: str, text: str, mkdirs: bool = True) -> str:
     _require_owner()
     target = _resolve_path(path)
@@ -506,7 +506,7 @@ def fs_write_text(path: str, text: str, mkdirs: bool = True) -> str:
     return "ok"
 
 
-@mcp.tool(execution={"taskSupport": "forbidden"})
+@mcp.tool()
 def fs_delete(path: str, recursive: bool = False) -> str:
     _require_owner()
     target = _resolve_path(path)
@@ -654,7 +654,7 @@ def _validate_git_args(command: str, args: list[str]) -> None:
                            f"Allowed prefixes: {allowed_prefixes}")
 
 
-@mcp.tool(execution={"taskSupport": "forbidden"})
+@mcp.tool()
 def git(args: list[str], timeout_s: int = 120) -> dict[str, Any]:
     """Execute git commands within the workspace.
     
@@ -699,7 +699,7 @@ def git(args: list[str], timeout_s: int = 120) -> dict[str, Any]:
     }
 
 
-@mcp.tool(execution={"taskSupport": "forbidden"})
+@mcp.tool()
 def ssh_public_key() -> str:
     _require_owner()
     public_key = WORKSPACE_ROOT / ".ssh" / "id_ed25519.pub"
