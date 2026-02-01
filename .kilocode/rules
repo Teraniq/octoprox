@@ -1,0 +1,244 @@
+# Kilo Code Rules for Workspace MCP Hub
+
+## Mode Selection Guide
+
+### When to Use Each Mode
+
+#### Code Mode (Current)
+Use for:
+- Implementing new features and endpoints
+- Writing SQLAlchemy models and migrations
+- Adding MCP tools to workspace-mcp
+- Creating tests with pytest
+- Refactoring existing code
+- Fixing bugs
+- Adding authentication or security features
+
+#### Architect Mode
+Use for:
+- Designing new database schemas
+- Planning major feature additions
+- Refactoring system architecture
+- Designing API contracts
+- Planning Docker/container changes
+- Security architecture reviews
+- Performance optimization strategies
+
+#### Debug Mode
+Use for:
+- Investigating test failures
+- Troubleshooting Docker/container issues
+- Debugging authentication problems
+- Analyzing routing issues (Traefik)
+- Fixing database connection problems
+- Investigating MCP protocol issues
+
+#### Ask Mode
+Use for:
+- Understanding the MCP protocol
+- Learning about Traefik configuration
+- Understanding the auth flow
+- Explaining Docker networking
+- Clarifying SQLAlchemy 2.0 patterns
+- Understanding FastAPI patterns
+
+## Project-Specific Patterns
+
+### FastAPI Route Patterns
+
+```python
+# Standard route with auth
+def require_login(request: Request) -> dict[str, Any]:
+    user = request.session.get("user")
+    if not user:
+        raise HTTPException(status_code=status.HTTP_303_SEE_OTHER, headers={"Location": "/login"})
+    return user
+
+# Route with DB dependency
+@app.get("/workspaces", response_class=HTMLResponse)
+def workspaces_page(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> HTMLResponse:
+    # Implementation
+    pass
+```
+
+### SQLAlchemy 2.0 Patterns
+
+```python
+# Model definition
+class Workspace(Base):
+    __tablename__ = "workspaces"
+    
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    status: Mapped[str] = mapped_column(
+        Enum("active", "inactive", "deleted", name="workspace_status"),
+        default="active",
+    )
+    
+    user: Mapped[User] = relationship("User", back_populates="workspaces")
+
+# Query pattern
+result = db.execute(select(Workspace).where(Workspace.name == name)).scalar_one_or_none()
+```
+
+### MCP Tool Patterns
+
+```python
+@mcp.tool(execution={"taskSupport": "forbidden"})
+def fs_read_text(path: str, max_bytes: int = 200000) -> str:
+    _require_owner()
+    target = _resolve_path(path)
+    if not target.exists():
+        raise FileNotFoundError("File not found")
+    data = target.read_bytes()[:max_bytes]
+    return data.decode("utf-8", errors="replace")
+```
+
+### Service Layer Patterns
+
+```python
+def create_workspace(
+    db: Session,
+    provisioner: WorkspaceProvisioner,
+    user: User,
+    name: str,
+) -> Workspace:
+    ok, message = validate_workspace_name(db, name)
+    if not ok:
+        raise ValueError(message)
+    workspace = Workspace(user_id=user.id, name=name, status="active")
+    db.add(workspace)
+    db.commit()
+    db.refresh(workspace)
+    try:
+        provisioner.create_workspace(workspace)
+    except Exception:
+        db.delete(workspace)
+        db.commit()
+        raise
+    return workspace
+```
+
+### Testing Patterns
+
+```python
+class FakeProvisioner:
+    def __init__(self) -> None:
+        self.created: list[str] = []
+        self.deleted: list[str] = []
+        self.purged: list[str] = []
+
+    def create_workspace(self, workspace: Workspace) -> None:
+        self.created.append(workspace.name)
+
+    def delete_workspace(self, workspace: Workspace) -> None:
+        self.deleted.append(workspace.name)
+
+
+def build_session() -> Session:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(bind=engine)
+    return sessionmaker(bind=engine, future=True)()
+
+
+def test_something() -> None:
+    db = build_session()
+    # Test implementation
+```
+
+## Common Tasks
+
+### Adding a New API Endpoint
+
+1. Add route in [`app/main.py`](workspace-manager/app/main.py)
+2. Use appropriate HTTP method (GET for pages, POST for actions)
+3. Add authentication via `Depends(get_current_user)`
+4. Return `HTMLResponse` for pages, `RedirectResponse` for actions
+5. Add tests in [`tests/test_services.py`](workspace-manager/tests/test_services.py)
+
+### Adding a New MCP Tool
+
+1. Add tool function in [`workspace-mcp/app.py`](workspace-mcp/app.py)
+2. Use `@mcp.tool()` decorator
+3. Call `_require_owner()` for auth
+4. Use `_resolve_path()` for filesystem safety
+5. Return typed dictionaries for complex outputs
+
+### Adding a Database Model
+
+1. Define model in [`app/models.py`](workspace-manager/app/models.py)
+2. Use SQLAlchemy 2.0 `Mapped[type]` syntax
+3. Add relationships with proper `back_populates`
+4. Run tests to verify schema creation
+
+### Adding a Service Function
+
+1. Add to [`app/services.py`](workspace-manager/app/services.py)
+2. Accept `db: Session` as first parameter
+3. Accept `provisioner: WorkspaceProvisioner` if Docker ops needed
+4. Raise `ValueError` for validation errors
+5. Commit transactions before Docker operations
+
+## Testing Requirements
+
+### Unit Tests
+- Use in-memory SQLite database
+- Use `FakeProvisioner` to mock Docker operations
+- Test both success and failure cases
+- Test edge cases (duplicate names, invalid tokens, etc.)
+
+### Integration Considerations
+- Docker operations require actual Docker daemon
+- File system tests need temp directories
+- Auth tests need proper token generation
+
+### Test File Organization
+```
+tests/
+├── test_services.py     # Business logic tests
+├── test_auth.py         # Authentication tests (add as needed)
+└── test_provisioning.py # Docker integration tests (add as needed)
+```
+
+## Code Review Checklist
+
+Before submitting changes:
+
+- [ ] Type hints on all functions and methods
+- [ ] `from __future__ import annotations` at top of file
+- [ ] Docstrings for public functions
+- [ ] Error handling with specific exceptions
+- [ ] No plaintext secrets in code
+- [ ] Tests added for new functionality
+- [ ] Existing tests pass (`pytest`)
+- [ ] No SQL injection vulnerabilities (use ORM)
+- [ ] Path traversal protection for file operations
+
+## Quick Reference
+
+### Environment Setup
+```bash
+cd workspace-manager
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+pytest
+```
+
+### Running the Stack
+```bash
+docker compose --profile build build
+PUBLIC_BASE_URL=http://localhost:8080 docker compose up -d
+```
+
+### Key Files to Know
+- [`app/main.py`](workspace-manager/app/main.py) - All HTTP routes
+- [`app/models.py`](workspace-manager/app/models.py) - Database schema
+- [`app/services.py`](workspace-manager/app/services.py) - Business logic
+- [`app/auth.py`](workspace-manager/app/auth.py) - Security utilities
+- [`app/provisioning.py`](workspace-manager/app/provisioning.py) - Docker ops
+- [`workspace-mcp/app.py`](workspace-mcp/app.py) - MCP tools

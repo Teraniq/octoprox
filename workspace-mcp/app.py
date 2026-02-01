@@ -12,6 +12,7 @@ from typing import Any
 
 import httpx
 import yaml
+from cachetools import TTLCache
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
@@ -23,10 +24,21 @@ OWNER_USER_ID = os.getenv("WORKSPACE_OWNER_USER_ID", "")
 INTROSPECT_URL = os.getenv("MANAGER_INTROSPECT_URL", "")
 MCP_PORT = int(os.getenv("MCP_PORT", "7000"))
 
+# Bounded caches with TTL and maxsize to prevent unbounded growth
+# Max 1000 tokens cached, TTL 60 seconds
+_token_cache: TTLCache[str, dict[str, Any]] = TTLCache(maxsize=1000, ttl=60)
+# Max 1 OpenAPI spec cached, TTL 1 hour
+_openapi_cache: TTLCache[str, dict[str, Any]] = TTLCache(maxsize=1, ttl=3600)
+# Max 10 GitLab specs cached, TTL 1 hour
+_gitlab_spec_cache: TTLCache[str, dict[str, Any]] = TTLCache(maxsize=10, ttl=3600)
+
+# Legacy TTL constants for compatibility
 CACHE_TTL_SECONDS = 60
-_cache: dict[str, tuple[dict[str, Any], float]] = {}
 OPENAPI_CACHE_TTL_SECONDS = 3600
-_openapi_cache: tuple[dict[str, Any], float] | None = None
+GITLAB_SPEC_CACHE_TTL_SECONDS = 3600
+
+# Legacy dict caches (deprecated, use TTLCache versions above)
+_cache: dict[str, tuple[dict[str, Any], float]] = {}
 
 GITLAB_TOOL_ICONS = [
     {
@@ -98,6 +110,13 @@ def _now() -> float:
 
 
 def _cache_get(token: str) -> dict[str, Any] | None:
+    """Get token from cache (uses TTLCache for bounded memory)."""
+    # Prefer TTLCache, fallback to legacy dict for compatibility
+    cached = _token_cache.get(token)
+    if cached is not None:
+        return cached
+    
+    # Legacy fallback
     entry = _cache.get(token)
     if not entry:
         return None
@@ -109,32 +128,46 @@ def _cache_get(token: str) -> dict[str, Any] | None:
 
 
 def _cache_set(token: str, payload: dict[str, Any]) -> None:
+    """Set token in cache (uses TTLCache for bounded memory)."""
+    # Set in both caches for compatibility
+    _token_cache[token] = payload
     _cache[token] = (payload, _now() + CACHE_TTL_SECONDS)
 
 
 def _openapi_cache_get() -> dict[str, Any] | None:
+    """Get OpenAPI spec from cache (uses TTLCache for bounded memory)."""
     global _openapi_cache
-    if not _openapi_cache:
-        return None
-    payload, expires_at = _openapi_cache
-    if _now() > expires_at:
-        _openapi_cache = None
-def _gitlab_spec_get(spec_url: str) -> dict[str, Any] | None:
-    entry = _gitlab_spec_cache.get(spec_url)
-    if not entry:
-        return None
-    payload, expires_at = entry
-    if _now() > expires_at:
-        _gitlab_spec_cache.pop(spec_url, None)
-        return None
-    return payload
+    # Prefer TTLCache
+    cached = _openapi_cache.get("spec")
+    if cached is not None:
+        return cached
+    
+    # Legacy fallback
+    if not hasattr(_openapi_cache, '__getitem__') or isinstance(_openapi_cache, tuple):
+        # Handle legacy tuple format
+        if _openapi_cache is None or not isinstance(_openapi_cache, tuple):
+            return None
+        payload, expires_at = _openapi_cache
+        if _now() > expires_at:
+            _openapi_cache = None
+            return None
+        return payload
+    return None
 
 
 def _openapi_cache_set(payload: dict[str, Any]) -> None:
-    global _openapi_cache
-    _openapi_cache = (payload, _now() + OPENAPI_CACHE_TTL_SECONDS)
+    """Set OpenAPI spec in cache (uses TTLCache for bounded memory)."""
+    _openapi_cache["spec"] = payload
+
+
+def _gitlab_spec_get(spec_url: str) -> dict[str, Any] | None:
+    """Get GitLab spec from cache (uses TTLCache for bounded memory)."""
+    return _gitlab_spec_cache.get(spec_url)
+
+
 def _gitlab_spec_set(spec_url: str, payload: dict[str, Any]) -> None:
-    _gitlab_spec_cache[spec_url] = (payload, _now() + GITLAB_SPEC_CACHE_TTL_SECONDS)
+    """Set GitLab spec in cache (uses TTLCache for bounded memory)."""
+    _gitlab_spec_cache[spec_url] = payload
 
 
 def _load_gitlab_spec(spec_url: str, refresh: bool = False) -> dict[str, Any]:
@@ -157,14 +190,44 @@ def _load_gitlab_spec(spec_url: str, refresh: bool = False) -> dict[str, Any]:
     return payload
 
 
+# Singleton httpx.AsyncClient for connection reuse
+# Initialized lazily and closed on module cleanup
+_httpx_client: httpx.AsyncClient | None = None
+
+
+def _get_httpx_client() -> httpx.AsyncClient:
+    """Get or create the singleton httpx.AsyncClient."""
+    global _httpx_client
+    if _httpx_client is None:
+        _httpx_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(5.0, connect=2.0),
+            limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+        )
+    return _httpx_client
+
+
+async def _close_httpx_client() -> None:
+    """Close the singleton httpx.AsyncClient."""
+    global _httpx_client
+    if _httpx_client is not None:
+        await _httpx_client.aclose()
+        _httpx_client = None
+
+
 async def introspect_token(token: str) -> dict[str, Any]:
     cached = _cache_get(token)
     if cached:
         return cached
     if not INTROSPECT_URL:
         return {"active": False}
-    async with httpx.AsyncClient(timeout=5) as client:
+    
+    # Use singleton client instead of creating new one each time
+    client = _get_httpx_client()
+    try:
         response = await client.post(INTROSPECT_URL, json={"token": token})
+    except httpx.RequestError:
+        return {"active": False}
+    
     if response.status_code != 200:
         return {"active": False}
     payload = response.json()
@@ -193,9 +256,49 @@ def _require_owner() -> None:
 
 
 def _resolve_path(path: str) -> pathlib.Path:
-    target = (WORKSPACE_ROOT / path).resolve()
-    if not str(target).startswith(str(WORKSPACE_ROOT)):
-        raise ValueError("Path escapes workspace")
+    """Resolve and validate a path within the workspace root.
+    
+    Security: Uses proper path comparison (not string-based) to prevent path traversal.
+    Handles symlink attacks and validates path length and content.
+    """
+    # Validate path length to prevent DoS
+    if not path:
+        raise ValueError("Path cannot be empty")
+    if len(path) > 4096:
+        raise ValueError("Path exceeds maximum length of 4096 characters")
+    
+    # Check for null bytes which could cause issues
+    if '\x00' in path:
+        raise ValueError("Path contains null bytes")
+    
+    # Check for control characters
+    if any(ord(c) < 32 for c in path):
+        raise ValueError("Path contains control characters")
+    
+    # Resolve the path (follows symlinks)
+    try:
+        target = (WORKSPACE_ROOT / path).resolve()
+    except (OSError, ValueError) as e:
+        raise ValueError(f"Invalid path: {e}")
+    
+    # Use proper path comparison (not string-based) to prevent traversal
+    try:
+        target.relative_to(WORKSPACE_ROOT)
+    except ValueError:
+        raise ValueError("Path escapes workspace root")
+    
+    # Additional check: ensure resolved path is still under WORKSPACE_ROOT
+    # This catches symlink-based attacks where a symlink points outside
+    if WORKSPACE_ROOT not in target.parents and target != WORKSPACE_ROOT:
+        # Check if target is exactly WORKSPACE_ROOT or a subdirectory
+        try:
+            # On some systems, relative_to might behave differently
+            resolved_relative = target.relative_to(WORKSPACE_ROOT)
+            if str(resolved_relative).startswith('..'):
+                raise ValueError("Path escapes workspace root via symlink")
+        except ValueError:
+            raise ValueError("Path escapes workspace root")
+    
     return target
 
 
@@ -337,19 +440,6 @@ GITLAB_TOOL_HELP_OUTPUT_SCHEMA = {
 }
 
 
-@mcp.tool(outputSchema=GITLAB_REQUEST_OUTPUT_SCHEMA)
-def gitlab_request() -> dict[str, Any]:
-    _require_owner()
-    return {
-        "status_code": 501,
-        "headers": {},
-        "text": "Not implemented",
-        "json": None,
-        "truncated": False,
-        "base64": None,
-    }
-
-
 @mcp.tool(outputSchema=GITLAB_OPENAPI_SPEC_OUTPUT_SCHEMA)
 def gitlab_openapi_spec() -> dict[str, Any]:
     _require_owner()
@@ -384,16 +474,6 @@ def gitlab_openapi_operation() -> dict[str, Any]:
         "parameters": None,
         "requestBody": None,
         "responses": None,
-    }
-
-
-@mcp.tool(outputSchema=GITLAB_TOOL_HELP_OUTPUT_SCHEMA)
-def gitlab_tool_help() -> dict[str, Any]:
-    _require_owner()
-    return {
-        "overview": "",
-        "tools": [],
-        "notes": None,
     }
 
 
@@ -441,13 +521,169 @@ def fs_delete(path: str, recursive: bool = False) -> str:
     return "ok"
 
 
+# Whitelist of allowed git commands and their permitted arguments
+ALLOWED_GIT_COMMANDS: dict[str, dict[str, Any]] = {
+    'clone': {
+        'max_args': 10,
+        'allowed_prefixes': ['--depth=', '--branch=', '--single-branch', '--no-single-branch', 
+                             '--shallow-submodules', '--recurse-submodules', '--jobs=', 
+                             '--origin=', '--config=', '--'],
+    },
+    'pull': {
+        'max_args': 5,
+        'allowed_prefixes': ['--ff-only', '--no-rebase', '--rebase', '--autostash', 
+                             '--no-autostash', '--depth=', '--unshallow'],
+    },
+    'fetch': {
+        'max_args': 10,
+        'allowed_prefixes': ['--all', '--prune', '--prune-tags', '--depth=', '--unshallow',
+                             '--force', '--tags', '--no-tags'],
+    },
+    'status': {
+        'max_args': 5,
+        'allowed_prefixes': ['--short', '--branch', '--porcelain', '--untracked-files=', 
+                             '--ignored'],
+    },
+    'log': {
+        'max_args': 10,
+        'allowed_prefixes': ['--oneline', '--max-count=', '--since=', '--until=', 
+                             '--author=', '--grep=', '--all', '--graph', '--decorate'],
+    },
+    'diff': {
+        'max_args': 10,
+        'allowed_prefixes': ['--cached', '--staged', '--stat', '--numstat', '--name-only',
+                             '--name-status', '--check'],
+    },
+    'show': {
+        'max_args': 5,
+        'allowed_prefixes': ['--stat', '--name-only', '--format=', '--quiet'],
+    },
+    'branch': {
+        'max_args': 10,
+        'allowed_prefixes': ['--list', '--all', '--remote', '--merged', '--no-merged',
+                             '--contains=', '--format=', '-d', '-D', '-m', '-M'],
+    },
+    'checkout': {
+        'max_args': 5,
+        'allowed_prefixes': ['-b', '-B', '--track', '--no-track', '--orphan', 
+                             '--ours', '--theirs', '--merge', '-f', '--force'],
+    },
+    'add': {
+        'max_args': 50,
+        'allowed_prefixes': ['-A', '--all', '-u', '--update', '-f', '--force', '-n', '--dry-run'],
+    },
+    'reset': {
+        'max_args': 5,
+        'allowed_prefixes': ['--soft', '--mixed', '--hard', '--keep', '--merge',
+                             '--', 'HEAD', 'HEAD~'],
+    },
+    'commit': {
+        'max_args': 10,
+        'allowed_prefixes': ['-m', '--message=', '--amend', '--no-edit', '--all', '-a',
+                             '--signoff', '--no-verify'],
+    },
+    'push': {
+        'max_args': 10,
+        'allowed_prefixes': ['--all', '--tags', '--force', '-f', '--force-with-lease',
+                             '--set-upstream', '-u', '--delete', '-d'],
+    },
+    'remote': {
+        'max_args': 10,
+        'allowed_prefixes': ['-v', '--verbose', 'add', 'remove', 'rm', 'rename', 
+                             'set-url', 'get-url', 'show', 'prune'],
+    },
+    'config': {
+        'max_args': 5,
+        'allowed_prefixes': ['--global', '--local', '--system', '--list', '--get',
+                             '--add', '--unset', 'user.name', 'user.email', 'core.',
+                             'remote.', 'branch.', 'credential.'],
+    },
+    'init': {
+        'max_args': 5,
+        'allowed_prefixes': ['--bare', '--quiet', '-q', '--initial-branch=', '--shared'],
+    },
+}
+
+# Characters that could be used for shell injection
+SHELL_INJECTION_CHARS = set(';|&$`\n\r<>!{}[]')
+
+
+def _validate_git_args(command: str, args: list[str]) -> None:
+    """Validate git command arguments against whitelist.
+    
+    Raises ValueError if any argument is not allowed.
+    """
+    if command not in ALLOWED_GIT_COMMANDS:
+        raise ValueError(f"Git command '{command}' is not in the allowed whitelist. "
+                        f"Allowed commands: {list(ALLOWED_GIT_COMMANDS.keys())}")
+    
+    config = ALLOWED_GIT_COMMANDS[command]
+    max_args = config['max_args']
+    allowed_prefixes = config['allowed_prefixes']
+    
+    if len(args) > max_args:
+        raise ValueError(f"Too many arguments for '{command}': {len(args)} > {max_args}")
+    
+    for arg in args:
+        # Check for shell injection characters
+        if any(c in arg for c in SHELL_INJECTION_CHARS):
+            raise ValueError(f"Argument contains invalid characters: {arg[:50]}")
+        
+        # Check for command substitution attempts
+        if '$(' in arg or '`' in arg:
+            raise ValueError(f"Argument contains command substitution: {arg[:50]}")
+        
+        # Check argument against allowed prefixes
+        # Special case: file paths (anything not starting with -)
+        if not arg.startswith('-'):
+            # This is likely a file path or ref name - allow it
+            # but still check for injection patterns
+            if '..' in arg and '...' not in arg:
+                # Could be path traversal - check it's not trying to escape
+                if '../' in arg or '..\\' in arg:
+                    raise ValueError(f"Path traversal detected in argument: {arg[:50]}")
+            continue
+        
+        # Check if argument starts with any allowed prefix
+        is_allowed = any(
+            arg == prefix or arg.startswith(prefix) 
+            for prefix in allowed_prefixes
+        )
+        if not is_allowed:
+            raise ValueError(f"Argument not allowed for '{command}': {arg[:50]}. "
+                           f"Allowed prefixes: {allowed_prefixes}")
+
+
 @mcp.tool(execution={"taskSupport": "forbidden"})
 def git(args: list[str], timeout_s: int = 120) -> dict[str, Any]:
+    """Execute git commands within the workspace.
+    
+    Only whitelisted commands are allowed. Arguments are validated to prevent
+    command injection attacks.
+    """
     _require_owner()
-    cmd = ["git", "-C", str(WORKSPACE_ROOT), *args]
+    
+    # Validate timeout
+    if not isinstance(timeout_s, int) or timeout_s < 1 or timeout_s > 300:
+        raise ValueError("timeout_s must be an integer between 1 and 300")
+    
+    # Extract command and validate
+    if not args:
+        raise ValueError("No git command provided")
+    
+    command = args[0]
+    command_args = args[1:] if len(args) > 1 else []
+    
+    # Validate arguments against whitelist
+    _validate_git_args(command, command_args)
+    
+    # Build command (safe - no shell=True)
+    cmd = ["git", "-C", str(WORKSPACE_ROOT), command] + command_args
     env = os.environ.copy()
     env["HOME"] = str(WORKSPACE_ROOT / ".home")
     env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GIT_SSH_COMMAND"] = "ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=" + str(WORKSPACE_ROOT / ".ssh" / "known_hosts")
+    
     result = subprocess.run(
         cmd,
         capture_output=True,
@@ -579,20 +815,6 @@ def gitlab_openapi_operation(path: str, method: str) -> dict[str, Any]:
     return operation.get(method.lower(), {})
 
 
-@mcp.tool(
-    name="gitlab_tool_help",
-    description="Describe how to use the GitLab MCP tools.",
-)
-def gitlab_tool_help() -> str:
-    _require_owner()
-    return (
-        "GitLab tools available:\\n"
-        "- gitlab_request: call GitLab REST endpoints; accepts method, path, params, and json_body.\\n"
-        "- gitlab_openapi_spec: fetch the OpenAPI document.\\n"
-        "- gitlab_openapi_paths: list OpenAPI paths.\\n"
-        "- gitlab_openapi_operation: inspect an operation for a path + method.\\n"
-        "Authentication uses GITLAB_TOKEN, GITLAB_PRIVATE_TOKEN, or GITLAB_BEARER_TOKEN env vars."
-    )
 def _build_gitlab_files(files: list[dict[str, str]] | None) -> list[tuple[str, tuple[str, bytes, str]]] | None:
     if not files:
         return None
@@ -610,6 +832,22 @@ def _build_gitlab_files(files: list[dict[str, str]] | None) -> list[tuple[str, t
             raise ValueError("Invalid base64 in files payload.") from exc
         built.append((name, (filename, payload, content_type)))
     return built
+
+
+@mcp.tool(
+    name="gitlab_tool_help",
+    description="Describe how to use the GitLab MCP tools.",
+)
+def gitlab_tool_help() -> str:
+    _require_owner()
+    return (
+        "GitLab tools available:\n"
+        "- gitlab_request: call GitLab REST endpoints; accepts method, path, params, and json_body.\n"
+        "- gitlab_openapi_spec: fetch the OpenAPI document.\n"
+        "- gitlab_openapi_paths: list OpenAPI paths.\n"
+        "- gitlab_openapi_operation: inspect an operation for a path + method.\n"
+        "Authentication uses GITLAB_TOKEN, GITLAB_PRIVATE_TOKEN, or GITLAB_BEARER_TOKEN env vars."
+    )
 
 
 @mcp.tool(

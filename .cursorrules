@@ -1,0 +1,246 @@
+# Workspace MCP Hub - Cursor Rules
+
+## Project Overview
+
+Workspace MCP Hub is a production-shaped MVP for managing user workspaces and dedicated MCP (Model Context Protocol) servers with per-user API keys. It provides a multi-tenant platform where users can create isolated workspaces, each running its own MCP server with git, filesystem, and GitLab API tools.
+
+### Key Features
+- FastAPI + Jinja2 + HTMX admin/user UI
+- Session-based username/password authentication
+- RBAC (admin vs user roles)
+- API keys as bearer tokens (shown once, stored hashed)
+- Workspace provisioning (one Docker container per workspace, volume-backed)
+- Traefik routing with `/app/*` and `/ws/<name>/*`
+- MCP server per workspace exposing git + filesystem + GitLab API tools
+- Soft-delete + purge job for workspaces
+- User deactivation (stops workspaces, hides from UI)
+
+## Technology Stack
+
+### Backend
+- **Python 3.12+** - Core language
+- **FastAPI 0.128.0** - Web framework
+- **SQLAlchemy 2.0.46** - ORM for database operations
+- **Jinja2 3.1.6** - Template engine
+- **Passlib[argon2] 1.7.4** - Password hashing
+- **Docker SDK 7.1.0** - Container management
+
+### MCP Server
+- **mcp 1.26.0** - Model Context Protocol SDK
+- **httpx 0.28.1** - HTTP client
+- **PyYAML 6.0.3** - YAML parsing
+
+### Infrastructure
+- **Traefik v3.1** - Reverse proxy and load balancer
+- **Docker & Docker Compose** - Containerization
+- **SQLite** - Database (configurable)
+
+### Frontend
+- **HTMX** - Dynamic UI without heavy JavaScript
+- **Vanilla CSS** - Styling in `workspace-manager/app/static/style.css`
+
+## Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         Traefik (Port 8080)                     │
+│                    ┌─────────────────────┐                      │
+│                    │  Path Routing       │                      │
+│                    │  /app/* → Manager   │                      │
+│                    │  /ws/<name>/* → WS  │                      │
+│                    └─────────────────────┘                      │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+           ┌──────────────────┴──────────────────┐
+           │                                     │
+           ▼                                     ▼
+┌─────────────────────────┐         ┌─────────────────────────────┐
+│   Workspace Manager     │         │   Workspace MCP Containers  │
+│   (FastAPI + SQLite)    │         │   (One per workspace)       │
+│                         │         │                             │
+│ • User/Admin UI         │         │ • Git tools                 │
+│ • API Key management    │         │ • Filesystem tools          │
+│ • Workspace provisioning│         │ • GitLab API proxy          │
+│ • Auth introspection    │         │ • Isolated volumes          │
+│ • Soft-delete/purge     │         │                             │
+└─────────────────────────┘         └─────────────────────────────┘
+           │                                     │
+           │         Auth Introspection          │
+           │    POST /internal/auth/introspect   │
+           └─────────────────────────────────────┘
+```
+
+### Components
+
+1. **workspace-manager/** - Main FastAPI application
+   - [`app/main.py`](workspace-manager/app/main.py) - FastAPI routes and handlers
+   - [`app/models.py`](workspace-manager/app/models.py) - SQLAlchemy models (User, ApiKey, Workspace)
+   - [`app/auth.py`](workspace-manager/app/auth.py) - Password hashing and API key generation
+   - [`app/db.py`](workspace-manager/app/db.py) - Database setup and session management
+   - [`app/services.py`](workspace-manager/app/services.py) - Business logic
+   - [`app/provisioning.py`](workspace-manager/app/provisioning.py) - Docker container management
+   - [`app/settings.py`](workspace-manager/app/settings.py) - Configuration
+
+2. **workspace-mcp/** - MCP server implementation
+   - [`app.py`](workspace-mcp/app.py) - FastMCP server with git, filesystem, and GitLab tools
+
+3. **client/** - Example client code
+   - [`mcp_client.py`](client/mcp_client.py) - Streamable HTTP MCP client
+   - [`temporal_activities.py`](client/temporal_activities.py) - Temporal activity wrappers
+
+## Coding Standards
+
+### Python Requirements
+- **Python 3.12+** is required
+- Use `from __future__ import annotations` at the top of all Python files
+- Use type hints everywhere (function parameters, return types, variables)
+- Prefer `Mapped[type]` SQLAlchemy 2.0 style for model columns
+
+### Code Style
+```python
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+# Type hints required
+def create_workspace(db: Session, user: User, name: str) -> Workspace:
+    """Docstring describing the function."""
+    pass
+
+# SQLAlchemy 2.0 patterns
+class User(Base):
+    __tablename__ = "users"
+    
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    username: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+```
+
+### SQLAlchemy Patterns
+- Use 2.0-style query syntax: `db.execute(select(Model).where(...))`
+- Use `Mapped[type]` for column definitions
+- Always use `future=True` for engines and sessions
+- Enable foreign key constraints for SQLite: `PRAGMA foreign_keys=ON`
+
+### Error Handling
+- Use specific exceptions, not bare `except:`
+- Return meaningful error messages to users
+- Log errors with context using `logging.getLogger(__name__)`
+
+### Security Guidelines
+
+#### API Key Handling
+- API keys are generated with format: `mcp_<prefix>_<random>`
+- Only the full token is shown once at creation time
+- Store only the hash (using Argon2) and prefix in database
+- Verify keys using constant-time comparison via passlib
+
+#### Authentication Patterns
+- Session-based auth for UI (using starlette SessionMiddleware)
+- Bearer token auth for MCP endpoints (via introspection)
+- Rate limiting on login attempts (5 attempts per 5 minutes per IP)
+- Role-based access control (admin vs user)
+
+#### Internal Auth Introspection
+Workspace containers validate tokens by calling:
+```
+POST http://workspace-manager:8000/internal/auth/introspect
+{"token": "<api_key>"}
+```
+
+Response: `{"active": bool, "user_id": str, "role": str}`
+
+#### Password Security
+- Use Argon2 for password hashing via passlib
+- Never store plaintext passwords
+- Use `secrets` module for generating random tokens
+
+## File Organization
+
+```
+.
+├── docker-compose.yml          # Stack orchestration
+├── .cursorrules               # This file
+├── README.md                  # Project documentation
+├── workspace-manager/         # Main FastAPI app
+│   ├── app/
+│   │   ├── __init__.py
+│   │   ├── main.py           # FastAPI routes
+│   │   ├── models.py         # SQLAlchemy models
+│   │   ├── auth.py           # Password/API key auth
+│   │   ├── db.py             # Database setup
+│   │   ├── services.py       # Business logic
+│   │   ├── provisioning.py   # Docker management
+│   │   ├── settings.py       # Config
+│   │   ├── static/           # CSS, JS
+│   │   └── templates/        # Jinja2 templates
+│   ├── tests/                # pytest tests
+│   ├── Dockerfile
+│   └── requirements.txt
+├── workspace-mcp/            # MCP server
+│   ├── app.py               # FastMCP implementation
+│   ├── Dockerfile
+│   └── requirements.txt
+└── client/                   # Example clients
+    ├── mcp_client.py
+    └── temporal_activities.py
+```
+
+## Development Guidelines
+
+### Adding New Features
+1. Models go in [`app/models.py`](workspace-manager/app/models.py)
+2. Business logic goes in [`app/services.py`](workspace-manager/app/services.py)
+3. Routes go in [`app/main.py`](workspace-manager/app/main.py)
+4. Docker operations go in [`app/provisioning.py`](workspace-manager/app/provisioning.py)
+5. Tests go in [`tests/`](workspace-manager/tests/)
+
+### Database Migrations
+Currently using SQLite with auto-create on startup. For production, implement Alembic migrations.
+
+### Environment Variables
+Key configuration via environment (see [`app/settings.py`](workspace-manager/app/settings.py)):
+- `SECRET_KEY` - Session signing key
+- `DATABASE_URL` - SQLite path or other DB URL
+- `PUBLIC_BASE_URL` - External URL for links
+- `BOOTSTRAP_ADMIN_USERNAME/PASSWORD` - Initial admin
+- `WORKSPACE_IMAGE` - Docker image for workspaces
+- `DOCKER_NETWORK` - Network for workspace containers
+
+### Testing
+```bash
+cd workspace-manager
+pytest
+```
+
+Write tests using pytest with fake/mock provisioners for unit tests.
+
+## Common Commands
+
+```bash
+# Build images
+docker compose --profile build build
+
+# Run stack
+PUBLIC_BASE_URL=http://localhost:8080 docker compose up -d
+
+# Run tests
+cd workspace-manager && pytest
+
+# View logs
+docker compose logs -f workspace-manager
+```
+
+## Security Checklist
+
+- [ ] Never log or expose API key tokens (only prefixes)
+- [ ] Validate all user inputs (workspace names: `^[a-zA-Z0-9._-]{1,128}$`)
+- [ ] Use parameterized queries (SQLAlchemy ORM)
+- [ ] Verify path traversal protection in filesystem tools
+- [ ] Ensure workspace isolation (each container has own volume)
+- [ ] Validate introspection tokens before caching
+- [ ] Rate limit authentication endpoints
+- [ ] Prevent last admin deactivation

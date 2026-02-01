@@ -21,6 +21,9 @@
       <div>
         {{ user.username }} ({{ user.role }})
         <form action="/logout" method="post" style="display:inline;">
+          {% if csrf_token %}
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+          {% endif %}
           <button class="secondary" type="submit">Logout</button>
         </form>
       </div>

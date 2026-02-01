@@ -5,6 +5,7 @@
 <div class="message">{{ message }}</div>
 {% endif %}
 <form method="post" action="/admin/users">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
   <label>Username</label>
   <input type="text" name="username" required />
   <label>Password</label>
@@ -39,6 +40,7 @@
           action="/admin/users/{{ usr.id }}/deactivate"
           onsubmit="return confirmDelete('Deactivate user {{ usr.username }}?')"
         >
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
           <button class="danger" type="submit" {% if usr.status == "inactive" %}disabled{% endif %}>
             Deactivate
           </button>

@@ -8,6 +8,7 @@
 <div class="token-box">{{ token }}</div>
 {% endif %}
 <form method="post" action="/workspaces">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
   <label>Workspace name</label>
   <input
     type="text"
@@ -53,6 +54,7 @@
           action="/workspaces/{{ ws.id }}/delete"
           onsubmit="return confirmWorkspaceDelete('{{ ws.name }}')"
         >
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
           <button class="danger" type="submit">Delete</button>
         </form>
       </td>

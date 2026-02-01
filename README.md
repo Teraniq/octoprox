@@ -2,6 +2,8 @@
 
 Production-shaped MVP for managing user workspaces and dedicated MCP servers with per-user API keys.
 
+**⚠️ SECURITY NOTICE:** Docker socket access is required for workspace provisioning. This grants significant privileges. See [Security](#security) section for mitigation strategies.
+
 ## Features
 - FastAPI + Jinja2 + HTMX admin/user UI
 - Sessions with username/password auth
@@ -28,14 +30,31 @@ Production-shaped MVP for managing user workspaces and dedicated MCP servers wit
    - http://localhost:8080/app
 
 ## Bootstrap admin credentials
-Set these environment variables before first start:
+**⚠️ CRITICAL:** These credentials MUST be set before first start. The application will **fail to start** if they are not configured.
+
 ```bash
+# Required - application will fail to start if not set
 BOOTSTRAP_ADMIN_USERNAME=admin
-BOOTSTRAP_ADMIN_PASSWORD=change-me
-SECRET_KEY=change-me-please
+BOOTSTRAP_ADMIN_PASSWORD=change-me-please-use-strong-password
+SECRET_KEY=$(openssl rand -base64 32)
 PUBLIC_BASE_URL=https://mcp.example.com
 ```
+
 The admin account is created on first startup if no admin exists.
+
+### Security
+- **SECRET_KEY**: Generate a secure random value: `openssl rand -base64 32`
+- **BOOTSTRAP_ADMIN_PASSWORD**: Use a strong password (min 16 characters recommended)
+- Never use default credentials in production
+
+## Docker Socket Security
+The workspace-manager requires access to the Docker socket for provisioning containers. This is a **significant security risk** as it grants the container full Docker control.
+
+### Mitigation Strategies:
+1. **Docker Socket Proxy**: Use [tecnativa/docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy) to limit API access
+2. **Rootless Docker**: Run Docker in rootless mode to reduce privilege escalation risks
+3. **Network Segmentation**: Isolate the MCP infrastructure on a separate Docker network
+4. **Read-Only Socket**: Mount the socket as read-only where possible (note: provisioning requires write access)
 
 ## Nginx Proxy Manager (TLS termination) -> Traefik
 1. In Nginx Proxy Manager, create a **Proxy Host** for `mcp.example.com`.

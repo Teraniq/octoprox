@@ -20,13 +20,21 @@ services:
     environment:
       - DATABASE_URL=sqlite:///./data/manager.db
       - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-http://localhost:8080}
-      - SECRET_KEY=${SECRET_KEY:-change-me}
-      - BOOTSTRAP_ADMIN_USERNAME=${BOOTSTRAP_ADMIN_USERNAME:-admin}
-      - BOOTSTRAP_ADMIN_PASSWORD=${BOOTSTRAP_ADMIN_PASSWORD:-admin}
+      # SECURITY: SECRET_KEY must be set to a secure random value (min 32 chars)
+      # Generate with: openssl rand -base64 32
+      - SECRET_KEY=${SECRET_KEY}
+      # SECURITY: Bootstrap admin credentials MUST be changed from defaults
+      # These are required - the app will fail to start if not set
+      - BOOTSTRAP_ADMIN_USERNAME=${BOOTSTRAP_ADMIN_USERNAME}
+      - BOOTSTRAP_ADMIN_PASSWORD=${BOOTSTRAP_ADMIN_PASSWORD}
       - WORKSPACE_IMAGE=mcp-gitfs:latest
       - DOCKER_NETWORK=mcpnet
     volumes:
       - manager-data:/app/data
+      # SECURITY WARNING: Docker socket access grants container full Docker control
+      # This is required for workspace provisioning but is a security risk.
+      # Mitigation: Use Docker socket proxy (e.g., tecnativa/docker-socket-proxy)
+      # or rootless Docker to limit exposure.
       - /var/run/docker.sock:/var/run/docker.sock
     labels:
       - "traefik.enable=true"

@@ -8,6 +8,7 @@
 <div class="token-box">{{ token }}</div>
 {% endif %}
 <form method="post" action="/keys">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
   <button type="submit">Create API Key</button>
 </form>
 <table>
@@ -31,6 +32,7 @@
           action="/keys/{{ key.id }}/delete"
           onsubmit="return confirmDelete('Delete API key {{ key.key_prefix }}?')"
         >
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
           <button class="danger" type="submit">Delete</button>
         </form>
       </td>
