@@ -138,14 +138,20 @@ def _gitlab_spec_set(spec_url: str, payload: dict[str, Any]) -> None:
 
 
 def _load_gitlab_spec(spec_url: str, refresh: bool = False) -> dict[str, Any]:
-    if not refresh:
-        cached = _gitlab_spec_get(spec_url)
+    cached = _gitlab_spec_get(spec_url)
+    if cached and not refresh:
+        return cached
+    try:
+        response = httpx.get(spec_url, timeout=30)
+        response.raise_for_status()
+        payload = yaml.safe_load(response.text)
+    except (httpx.RequestError, httpx.HTTPStatusError, yaml.YAMLError) as exc:
         if cached:
             return cached
-    response = httpx.get(spec_url, timeout=30)
-    response.raise_for_status()
-    payload = yaml.safe_load(response.text)
+        raise RuntimeError("Failed to fetch GitLab OpenAPI spec.") from exc
     if not isinstance(payload, dict):
+        if cached:
+            return cached
         raise ValueError("Invalid OpenAPI spec payload.")
     _gitlab_spec_set(spec_url, payload)
     return payload
