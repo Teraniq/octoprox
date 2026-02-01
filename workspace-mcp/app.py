@@ -125,6 +125,148 @@ mcp = FastMCP(
     token_verifier=ManagerTokenVerifier(),
 )
 
+GITLAB_REQUEST_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "status_code": {"type": "number"},
+        "headers": {"type": "object"},
+        "text": {"type": "string"},
+        "json": {"type": ["object", "null"]},
+        "truncated": {"type": "boolean"},
+        "base64": {"type": ["string", "null"]},
+    },
+    "required": ["status_code", "headers", "text", "json", "truncated", "base64"],
+}
+
+GITLAB_OPENAPI_SPEC_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "status_code": {"type": "number"},
+        "offset": {"type": "number"},
+        "total_bytes": {"type": "number"},
+        "truncated": {"type": "boolean"},
+        "text": {"type": "string"},
+    },
+    "required": ["status_code", "offset", "total_bytes", "truncated", "text"],
+}
+
+GITLAB_OPENAPI_PATHS_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "total": {"type": "number"},
+        "offset": {"type": "number"},
+        "limit": {"type": "number"},
+        "entries": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "method": {"type": "string"},
+                    "summary": {"type": ["string", "null"]},
+                },
+                "required": ["path", "method", "summary"],
+            },
+        },
+    },
+    "required": ["total", "offset", "limit", "entries"],
+}
+
+GITLAB_OPENAPI_OPERATION_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string"},
+        "description": {"type": ["string", "null"]},
+        "operationId": {"type": ["string", "null"]},
+        "tags": {"type": ["array", "null"]},
+        "parameters": {"type": ["array", "null"]},
+        "requestBody": {"type": ["object", "null"]},
+        "responses": {"type": ["object", "null"]},
+    },
+    "required": [
+        "summary",
+        "description",
+        "operationId",
+        "tags",
+        "parameters",
+        "requestBody",
+        "responses",
+    ],
+}
+
+GITLAB_TOOL_HELP_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "overview": {"type": "string"},
+        "tools": {
+            "type": "array",
+            "items": {"type": ["string", "object"]},
+        },
+        "notes": {"type": ["string", "null"]},
+    },
+    "required": ["overview", "tools", "notes"],
+}
+
+
+@mcp.tool(outputSchema=GITLAB_REQUEST_OUTPUT_SCHEMA)
+def gitlab_request() -> dict[str, Any]:
+    _require_owner()
+    return {
+        "status_code": 501,
+        "headers": {},
+        "text": "Not implemented",
+        "json": None,
+        "truncated": False,
+        "base64": None,
+    }
+
+
+@mcp.tool(outputSchema=GITLAB_OPENAPI_SPEC_OUTPUT_SCHEMA)
+def gitlab_openapi_spec() -> dict[str, Any]:
+    _require_owner()
+    return {
+        "status_code": 501,
+        "offset": 0,
+        "total_bytes": 0,
+        "truncated": False,
+        "text": "Not implemented",
+    }
+
+
+@mcp.tool(outputSchema=GITLAB_OPENAPI_PATHS_OUTPUT_SCHEMA)
+def gitlab_openapi_paths() -> dict[str, Any]:
+    _require_owner()
+    return {
+        "total": 0,
+        "offset": 0,
+        "limit": 0,
+        "entries": [],
+    }
+
+
+@mcp.tool(outputSchema=GITLAB_OPENAPI_OPERATION_OUTPUT_SCHEMA)
+def gitlab_openapi_operation() -> dict[str, Any]:
+    _require_owner()
+    return {
+        "summary": "",
+        "description": None,
+        "operationId": None,
+        "tags": None,
+        "parameters": None,
+        "requestBody": None,
+        "responses": None,
+    }
+
+
+@mcp.tool(outputSchema=GITLAB_TOOL_HELP_OUTPUT_SCHEMA)
+def gitlab_tool_help() -> dict[str, Any]:
+    _require_owner()
+    return {
+        "overview": "",
+        "tools": [],
+        "notes": None,
+    }
+
 
 @mcp.tool()
 def fs_list(path: str = ".") -> list[str]:
