@@ -159,7 +159,7 @@ mcp = FastMCP(
 )
 
 
-@mcp.tool()
+@mcp.tool(execution={"taskSupport": "forbidden"})
 def fs_list(path: str = ".") -> list[str]:
     _require_owner()
     target = _resolve_path(path)
@@ -168,7 +168,7 @@ def fs_list(path: str = ".") -> list[str]:
     return [entry.name for entry in target.iterdir()]
 
 
-@mcp.tool()
+@mcp.tool(execution={"taskSupport": "forbidden"})
 def fs_read_text(path: str, max_bytes: int = 200000) -> str:
     _require_owner()
     target = _resolve_path(path)
@@ -178,7 +178,7 @@ def fs_read_text(path: str, max_bytes: int = 200000) -> str:
     return data.decode("utf-8", errors="replace")
 
 
-@mcp.tool()
+@mcp.tool(execution={"taskSupport": "forbidden"})
 def fs_write_text(path: str, text: str, mkdirs: bool = True) -> str:
     _require_owner()
     target = _resolve_path(path)
@@ -188,7 +188,7 @@ def fs_write_text(path: str, text: str, mkdirs: bool = True) -> str:
     return "ok"
 
 
-@mcp.tool()
+@mcp.tool(execution={"taskSupport": "forbidden"})
 def fs_delete(path: str, recursive: bool = False) -> str:
     _require_owner()
     target = _resolve_path(path)
@@ -203,7 +203,7 @@ def fs_delete(path: str, recursive: bool = False) -> str:
     return "ok"
 
 
-@mcp.tool()
+@mcp.tool(execution={"taskSupport": "forbidden"})
 def git(args: list[str], timeout_s: int = 120) -> dict[str, Any]:
     _require_owner()
     cmd = ["git", "-C", str(WORKSPACE_ROOT), *args]
@@ -225,7 +225,7 @@ def git(args: list[str], timeout_s: int = 120) -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@mcp.tool(execution={"taskSupport": "forbidden"})
 def ssh_public_key() -> str:
     _require_owner()
     public_key = WORKSPACE_ROOT / ".ssh" / "id_ed25519.pub"
