@@ -10,6 +10,8 @@ Production-shaped MVP for managing user workspaces and dedicated MCP servers wit
 - Workspace provisioning (one container per workspace, volume-backed)
 - Traefik routing with `/app/*` and `/ws/<name>/*`
 - MCP server per workspace exposing git + filesystem tools
+- MCP GitLab API proxy tool (configure GitLab endpoint + token in MCP client)
+- MCP helpers to fetch the GitLab OpenAPI spec and enumerate/inspect operations for endpoint discovery
 - Soft-delete + purge job
 - User deactivation (stops workspaces + hides them from UI)
 

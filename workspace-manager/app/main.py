@@ -224,7 +224,19 @@ def workspace_details(
                 "type": "promptString",
                 "description": "Workspace MCP API token",
                 "password": True,
-            }
+            },
+            {
+                "id": "gitlab_endpoint",
+                "type": "promptString",
+                "description": "GitLab API base URL (e.g. https://gitlab.com/api/v4)",
+                "password": False,
+            },
+            {
+                "id": "gitlab_token",
+                "type": "promptString",
+                "description": "GitLab personal access token",
+                "password": True,
+            },
         ],
     }
     return templates.TemplateResponse(
