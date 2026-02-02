@@ -1,4 +1,6 @@
-# Workspace MCP Hub
+<img width="2048" height="2048" alt="wenga_Create_a_logo_for_a_new_software_service_called_octoprox _d9528fc8-46f1-43e3-93ed-ce6a508ee392" src="https://github.com/user-attachments/assets/54a52c1d-7f15-42fa-aeb5-5e298adc6df6" />
+
+# Octoprox
 
 Production-shaped MVP for managing user workspaces and dedicated MCP servers with per-user API keys.
 
