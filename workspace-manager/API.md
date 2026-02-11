@@ -8,12 +8,38 @@ https://your-domain.com/api/v1
 
 ## Authentication
 
-All API endpoints (except health) require authentication via one of:
-1. Session cookie (for browser requests)
-2. `Authorization: Bearer <api_key>` header
-3. `Authorization: Bearer <jwt_token>` header
+All API endpoints (except health) require authentication via one of three methods:
 
-### Getting an API Key
+### 1. Session Cookie Authentication
+
+Used by the web UI for browser-based requests.
+
+- Login via `POST /auth/login` to establish a session
+- Session cookie is set with `HttpOnly`, `Secure`, and `SameSite` attributes
+- Session expires after 7 days of inactivity
+
+**Example:**
+```bash
+curl -c cookies.txt \
+  -X POST https://api.example.com/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"secret"}'
+
+# Use session cookie for subsequent requests
+curl -b cookies.txt \
+  https://api.example.com/api/v1/users/me
+```
+
+### 2. API Key Authentication
+
+Use API keys for programmatic access. API keys have the `mcp_` prefix.
+
+**Header format:**
+```
+Authorization: Bearer mcp_xxxxxxxxxxxxxxxx
+```
+
+**Getting an API Key:**
 
 API keys are generated via the web UI at `/app/keys` or via the API:
 ```bash
@@ -23,7 +49,75 @@ POST /api/v1/api-keys
 }
 ```
 
-**Important**: The full API key is shown only once on creation.
+**Response:**
+```json
+{
+  "data": {
+    "id": 1,
+    "name": "My Application Key",
+    "key": "mcp_abc123_xyz789_this_is_the_full_key",
+    "created_at": "2026-02-10T12:00:00Z"
+  }
+}
+```
+
+**Important**: The full API key is shown only once on creation. Store it securely.
+
+**Example usage:**
+```bash
+curl https://api.example.com/api/v1/workspaces \
+  -H "Authorization: Bearer mcp_abc123_xyz789"
+```
+
+### 3. JWT Bearer Authentication
+
+JWT tokens are used for stateless authentication, typically for short-lived access.
+
+**Token format:**
+- Access tokens expire after 15 minutes
+- Include claims: `sub` (user_id), `username`, `role`, `jti`
+- Signed with the server's JWT secret
+
+**Header format:**
+```
+Authorization: Bearer eyJhbGciOiJIUzI1NiIs...
+```
+
+**Example usage:**
+```bash
+curl https://api.example.com/api/v1/workspaces \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIs..."
+```
+
+### Authentication Priority
+
+When multiple credentials are provided, the following priority is used:
+1. Session cookie (highest priority for browser requests)
+2. API key Bearer token
+3. JWT Bearer token
+
+### Token Introspection
+
+API keys and JWT tokens can be introspected at:
+```
+POST /auth/introspect
+{
+  "token": "mcp_abc123_xyz789"
+}
+```
+
+**Response:**
+```json
+{
+  "active": true,
+  "user_id": 1,
+  "username": "admin",
+  "role": "admin",
+  "token_type": "api_key"
+}
+```
+
+See the [Auth Introspection](#auth-introspection) section for details.
 
 ## Common Response Format
 
@@ -440,10 +534,14 @@ GET /health
 
 ## MCP Bridge
 
+The MCP Bridge provides REST API access to MCP (Model Context Protocol) tools running within workspace containers. This allows external systems to invoke tools without direct MCP protocol support.
+
 ### List MCP Tools
 
+List all available MCP tools for a specific workspace.
+
 ```
-GET /mcp/tools?workspace_id=1
+GET /api/v1/mcp/tools?workspace_id=1
 ```
 
 **Access**: Any authenticated user.
@@ -459,33 +557,105 @@ GET /mcp/tools?workspace_id=1
   "data": {
     "tools": [
       {
-        "name": "git_status",
-        "description": "Get git repository status"
+        "name": "fs_list",
+        "description": "List files and directories at the given path"
       },
       {
-        "name": "read_file",
-        "description": "Read a file from the workspace"
+        "name": "fs_read_text",
+        "description": "Read text content from a file"
+      },
+      {
+        "name": "fs_write_text",
+        "description": "Write text content to a file"
+      },
+      {
+        "name": "fs_delete",
+        "description": "Delete a file or directory"
+      },
+      {
+        "name": "git",
+        "description": "Execute git commands within the workspace"
+      },
+      {
+        "name": "gitlab_request",
+        "description": "Proxy any GitLab REST API request"
+      },
+      {
+        "name": "gitlab_openapi_paths",
+        "description": "List GitLab OpenAPI paths and methods"
+      },
+      {
+        "name": "gitlab_openapi_operation",
+        "description": "Get schema details for a GitLab API operation"
+      },
+      {
+        "name": "gitlab_openapi_spec",
+        "description": "Return the GitLab OpenAPI YAML specification"
+      },
+      {
+        "name": "gitlab_tool_help",
+        "description": "Return machine-readable help for GitLab MCP tools"
+      },
+      {
+        "name": "ssh_public_key",
+        "description": "Get the SSH public key for this workspace"
+      },
+      {
+        "name": "openapi_load",
+        "description": "Load an OpenAPI specification"
+      },
+      {
+        "name": "openapi_list_apis",
+        "description": "List all loaded OpenAPI APIs"
+      },
+      {
+        "name": "openapi_list_endpoints",
+        "description": "List endpoints from a loaded API"
+      },
+      {
+        "name": "openapi_get_operation",
+        "description": "Get detailed information about an API operation"
+      },
+      {
+        "name": "openapi_call",
+        "description": "Call an API operation"
       }
     ],
-    "count": 2
+    "count": 16
   }
 }
 ```
 
+**Error Responses**:
+
+| Status | Error | Description |
+|--------|-------|-------------|
+| 400 | `{"detail": "workspace_id is required"}` | Missing workspace_id parameter |
+| 403 | `{"detail": "Not authorized to access this workspace"}` | User not authorized |
+| 404 | `{"detail": "Workspace not found"}` | Workspace does not exist |
+| 503 | `{"detail": "MCP server unavailable"}` | Workspace MCP server not responding |
+
 ### Invoke MCP Tool
 
+Execute an MCP tool in a specific workspace.
+
 ```
-POST /mcp/invoke
-{
-  "workspace_id": 1,
-  "tool": "git_status",
-  "parameters": {}
-}
+POST /api/v1/mcp/invoke
 ```
 
 **Access**: Admin or workspace owner only.
 
 **Request Body**:
+```json
+{
+  "workspace_id": 1,
+  "tool": "fs_read_text",
+  "parameters": {
+    "path": "README.md"
+  }
+}
+```
+
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | workspace_id | integer | Yes | Target workspace ID |
@@ -496,15 +666,77 @@ POST /mcp/invoke
 ```json
 {
   "data": {
-    "tool": "git_status",
+    "tool": "fs_read_text",
     "workspace_id": 1,
-    "result": {
-      "branch": "main",
-      "status": "clean"
-    }
+    "result": "# My Project\n\nThis is the README content..."
   }
 }
 ```
+
+**Example - Git Status:**
+```bash
+curl -X POST https://api.example.com/api/v1/mcp/invoke \
+  -H "Authorization: Bearer mcp_abc123" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "workspace_id": 1,
+    "tool": "git",
+    "parameters": {
+      "args": ["status", "--short"]
+    }
+  }'
+```
+
+**Example - OpenAPI Call:**
+```bash
+curl -X POST https://api.example.com/api/v1/mcp/invoke \
+  -H "Authorization: Bearer mcp_abc123" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "workspace_id": 1,
+    "tool": "openapi_load",
+    "parameters": {
+      "name": "petstore",
+      "spec_url": "https://petstore.swagger.io/v2/swagger.json"
+    }
+  }'
+```
+
+**Error Responses**:
+
+| Status | Error | Description |
+|--------|-------|-------------|
+| 400 | `{"detail": "Invalid request body"}` | Malformed JSON |
+| 400 | `{"detail": "workspace_id is required"}` | Missing workspace_id |
+| 400 | `{"detail": "tool is required"}` | Missing tool name |
+| 403 | `{"detail": "Not authorized to invoke tools in this workspace"}` | Not owner/admin |
+| 404 | `{"detail": "Workspace not found"}` | Workspace does not exist |
+| 404 | `{"detail": "Tool not found"}` | Tool does not exist |
+| 422 | `{"detail": "Invalid parameters"}` | Tool parameter validation failed |
+| 500 | `{"detail": "Tool execution failed"}` | Tool execution error |
+| 503 | `{"detail": "MCP server unavailable"}` | Workspace MCP server not responding |
+
+### MCP Bridge Architecture
+
+```
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
+│  API Client     │────▶│  MCP Bridge      │────▶│  MCP Server     │
+│  (REST)         │     │  (workspace-     │     │  (workspace-    │
+│                 │◀────│   manager)       │◀────│   mcp)          │
+└─────────────────┘     └──────────────────┘     └─────────────────┘
+                               │
+                               ▼
+                        ┌──────────────────┐
+                        │  Auth Check      │
+                        │  (owner/admin)   │
+                        └──────────────────┘
+```
+
+The MCP Bridge:
+1. Validates authentication (any valid user)
+2. For invoke: validates authorization (owner or admin)
+3. Proxies request to workspace MCP server
+4. Returns tool results or error details
 
 ## Error Responses
 
