@@ -19,6 +19,9 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+AGENTS.md
+.roo/
+
 
 # Virtual environments
 .venv/
