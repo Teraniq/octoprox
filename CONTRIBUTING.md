@@ -195,6 +195,84 @@ Run integration tests separately:
 pytest -m integration
 ```
 
+## API Development
+
+When adding new API endpoints:
+
+1. Use the `/api/v1/` prefix
+2. Follow RESTful conventions
+3. Implement RBAC checks using `require_admin` or manual checks
+4. Use `api_response()` helper for consistent response format
+5. Add audit logging for security-sensitive operations
+6. Include rate limiting headers
+7. Add tests to `tests/test_api.py`
+
+### Response Format
+
+Always use the wrapped response format:
+
+```python
+from fastapi import Depends
+from app.auth import get_current_user_unified, require_admin
+from app.models import User
+
+@app.get("/api/v1/resource")
+async def get_resource(
+    current_user: User = Depends(get_current_user_unified)
+):
+    return api_response(
+        data={"users": [...]},
+        meta={"page": 1, "per_page": 20, "total": 100}
+    )
+```
+
+### Authentication
+
+Use the unified auth dependency:
+
+```python
+from fastapi import Depends
+from app.auth import get_current_user_unified, require_admin
+from app.models import User
+
+@app.get("/api/v1/resource")
+async def get_resource(
+    current_user: User = Depends(get_current_user_unified)
+):
+    # Available to any authenticated user
+    pass
+
+@app.delete("/api/v1/resource")
+async def delete_resource(
+    current_user: User = Depends(require_admin)
+):
+    # Admin only
+    pass
+```
+
+### Error Handling
+
+Use appropriate HTTP status codes and consistent error messages:
+
+```python
+from fastapi import HTTPException
+
+# 400 - Bad Request
+raise HTTPException(status_code=400, detail="Invalid workspace name format")
+
+# 401 - Unauthorized (authentication required)
+raise HTTPException(status_code=401, detail="Not authenticated")
+
+# 403 - Forbidden (not authorized)
+raise HTTPException(status_code=403, detail="Not authorized to access this resource")
+
+# 404 - Not Found
+raise HTTPException(status_code=404, detail="User not found")
+
+# 429 - Rate Limited
+raise HTTPException(status_code=429, detail="Rate limit exceeded")
+```
+
 ## Code Style Guidelines
 
 ### Python Style

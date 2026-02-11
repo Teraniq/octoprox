@@ -29,6 +29,21 @@ services:
       - BOOTSTRAP_ADMIN_PASSWORD=${BOOTSTRAP_ADMIN_PASSWORD}
       - WORKSPACE_IMAGE=mcp-gitfs:latest
       - DOCKER_NETWORK=mcpnet
+      # JWT Configuration for NEXUSGATE integration
+      # SECURITY: JWT_SECRET_KEY must be at least 32 characters long
+      # Generate with: openssl rand -base64 64
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - JWT_ALGORITHM=${JWT_ALGORITHM:-HS256}
+      - JWT_ACCESS_TOKEN_EXPIRE_MINUTES=${JWT_ACCESS_TOKEN_EXPIRE_MINUTES:-15}
+      - NEXUSGATE_INTEGRATION_ENABLED=${NEXUSGATE_INTEGRATION_ENABLED:-false}
+      - INTROSPECT_SECRET=${INTROSPECT_SECRET}
+      # Rate Limiting Configuration
+      - API_RATE_LIMIT=${API_RATE_LIMIT:-200}
+      - AUTH_RATE_LIMIT=${AUTH_RATE_LIMIT:-60}
+      # HTTPS Enforcement Configuration
+      - ENFORCE_HTTPS=${ENFORCE_HTTPS:-false}
+      - HSTS_MAX_AGE=${HSTS_MAX_AGE:-31536000}
+      - HSTS_INCLUDE_SUBDOMAINS=${HSTS_INCLUDE_SUBDOMAINS:-true}
     volumes:
       - manager-data:/app/data
       # SECURITY WARNING: Docker socket access grants container full Docker control

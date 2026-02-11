@@ -3,9 +3,9 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta, timezone
 import re
-from typing import Iterable
+from typing import Any, Iterable
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from . import auth
@@ -24,19 +24,6 @@ def validate_workspace_name(db: Session, name: str) -> tuple[bool, str]:
     if exists:
         return False, "Name already exists"
     return True, "Name is available"
-
-
-def create_api_key(db: Session, user: User) -> tuple[ApiKey, str]:
-    payload = auth.generate_api_key()
-    key = ApiKey(user_id=user.id, key_prefix=payload.prefix, key_hash=payload.hash)
-    db.add(key)
-    try:
-        db.commit()
-        db.refresh(key)
-    except Exception:
-        db.rollback()
-        raise
-    return key, payload.token
 
 
 def create_workspace(
@@ -205,3 +192,306 @@ def introspect_token(db: Session, token: str) -> dict:
                 return {"active": False}
             return {"active": True, "user_id": str(key.user_id), "role": key.user.role}
     return {"active": False}
+
+
+# ============================================================================
+# User Services
+# ============================================================================
+
+
+def list_users(
+    db: Session,
+    page: int = 1,
+    per_page: int = 20,
+    status: str | None = None,
+    role: str | None = None,
+) -> tuple[list[User], int]:
+    """List users with optional filtering and pagination.
+    
+    Args:
+        db: Database session
+        page: Page number (1-indexed)
+        per_page: Number of items per page
+        status: Optional filter by user status
+        role: Optional filter by user role
+        
+    Returns:
+        Tuple of (users list, total count)
+    """
+    # Build base query
+    query = select(User)
+    count_query = select(func.count(User.id))
+    
+    # Apply filters
+    if status is not None:
+        query = query.where(User.status == status)
+        count_query = count_query.where(User.status == status)
+    if role is not None:
+        query = query.where(User.role == role)
+        count_query = count_query.where(User.role == role)
+    
+    # Get total count
+    total = db.execute(count_query).scalar_one()
+    
+    # Apply pagination
+    offset = (page - 1) * per_page
+    query = query.offset(offset).limit(per_page)
+    
+    # Execute query
+    users = list(db.execute(query).scalars().all())
+    
+    return users, total
+
+
+def update_user(
+    db: Session,
+    user: User,
+    role: str | None = None,
+    status: str | None = None,
+    nexusgate_user_id: str | None = None,
+) -> User:
+    """Update user fields.
+    
+    Args:
+        db: Database session
+        user: User to update
+        role: Optional new role
+        status: Optional new status
+        nexusgate_user_id: Optional NEXUSGATE user ID
+        
+    Returns:
+        Updated user
+    """
+    if role is not None:
+        user.role = role
+    if status is not None:
+        user.status = status
+    if nexusgate_user_id is not None:
+        user.nexusgate_user_id = nexusgate_user_id
+    
+    user.updated_at = datetime.now(timezone.utc)
+    
+    db.add(user)
+    try:
+        db.commit()
+        db.refresh(user)
+    except Exception:
+        db.rollback()
+        raise
+    
+    return user
+
+
+# ============================================================================
+# Workspace Services
+# ============================================================================
+
+
+def list_workspaces(
+    db: Session,
+    user_id: int | None = None,
+    page: int = 1,
+    per_page: int = 20,
+    include_deleted: bool = False,
+) -> tuple[list[Workspace], int]:
+    """List workspaces with optional filtering and pagination.
+    
+    Args:
+        db: Database session
+        user_id: Optional filter by user ID
+        page: Page number (1-indexed)
+        per_page: Number of items per page
+        include_deleted: Whether to include deleted workspaces
+        
+    Returns:
+        Tuple of (workspaces list, total count)
+    """
+    # Build base query
+    query = select(Workspace)
+    count_query = select(func.count(Workspace.id))
+    
+    # Apply user filter
+    if user_id is not None:
+        query = query.where(Workspace.user_id == user_id)
+        count_query = count_query.where(Workspace.user_id == user_id)
+    
+    # Filter out deleted workspaces by default
+    if not include_deleted:
+        query = query.where(Workspace.deleted_at.is_(None))
+        count_query = count_query.where(Workspace.deleted_at.is_(None))
+    
+    # Get total count
+    total = db.execute(count_query).scalar_one()
+    
+    # Apply pagination
+    offset = (page - 1) * per_page
+    query = query.offset(offset).limit(per_page)
+    
+    # Execute query
+    workspaces = list(db.execute(query).scalars().all())
+    
+    return workspaces, total
+
+
+def create_workspace_api(
+    db: Session,
+    provisioner: WorkspaceProvisioner,
+    user: User,
+    name: str,
+    metadata: dict | None = None,
+) -> Workspace:
+    """Create a new workspace with optional metadata.
+    
+    Args:
+        db: Database session
+        provisioner: Workspace provisioner instance
+        user: User creating the workspace
+        name: Workspace name
+        metadata: Optional metadata dictionary
+        
+    Returns:
+        Created workspace
+    """
+    # Call existing create_workspace function
+    workspace = create_workspace(db, provisioner, user, name)
+    
+    # Set metadata if provided
+    if metadata is not None:
+        workspace.metadata = metadata
+        db.add(workspace)
+        try:
+            db.commit()
+            db.refresh(workspace)
+        except Exception:
+            db.rollback()
+            raise
+    
+    return workspace
+
+
+# ============================================================================
+# API Key Services
+# ============================================================================
+
+
+def list_api_keys(
+    db: Session,
+    user_id: int | None = None,
+    page: int = 1,
+    per_page: int = 20,
+) -> tuple[list[ApiKey], int]:
+    """List API keys with optional filtering and pagination.
+    
+    Args:
+        db: Database session
+        user_id: Optional filter by user ID
+        page: Page number (1-indexed)
+        per_page: Number of items per page
+        
+    Returns:
+        Tuple of (api keys list, total count)
+    """
+    # Build base query
+    query = select(ApiKey)
+    count_query = select(func.count(ApiKey.id))
+    
+    # Apply user filter
+    if user_id is not None:
+        query = query.where(ApiKey.user_id == user_id)
+        count_query = count_query.where(ApiKey.user_id == user_id)
+    
+    # Get total count
+    total = db.execute(count_query).scalar_one()
+    
+    # Apply pagination
+    offset = (page - 1) * per_page
+    query = query.offset(offset).limit(per_page)
+    
+    # Execute query
+    api_keys = list(db.execute(query).scalars().all())
+    
+    return api_keys, total
+
+
+def create_api_key(
+    db: Session,
+    user: User,
+    name: str | None = None,
+    nexusgate_token_id: str | None = None,
+) -> tuple[ApiKey, str]:
+    """Create a new API key for a user.
+    
+    Args:
+        db: Database session
+        user: User to create key for
+        name: Optional name for the API key
+        nexusgate_token_id: Optional NEXUSGATE token ID
+        
+    Returns:
+        Tuple of (ApiKey, raw_token)
+    """
+    payload = auth.generate_api_key()
+    key = ApiKey(
+        user_id=user.id,
+        key_prefix=payload.prefix,
+        key_hash=payload.hash,
+    )
+    
+    # Set optional fields if provided
+    if name is not None:
+        key.name = name
+    if nexusgate_token_id is not None:
+        key.nexusgate_token_id = nexusgate_token_id
+    
+    db.add(key)
+    try:
+        db.commit()
+        db.refresh(key)
+    except Exception:
+        db.rollback()
+        raise
+    return key, payload.token
+
+
+def revoke_api_key(db: Session, api_key: ApiKey) -> None:
+    """Revoke (delete) an API key.
+    
+    Args:
+        db: Database session
+        api_key: API key to revoke
+    """
+    db.delete(api_key)
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+
+# ============================================================================
+# Audit Logging
+# ============================================================================
+
+
+def audit_log(
+    user_id: int | None,
+    action: str,
+    resource: str,
+    details: dict | None = None,
+) -> None:
+    """Create a structured audit log entry.
+    
+    Args:
+        user_id: ID of the user performing the action, or None
+        action: Action being performed (e.g., 'create', 'delete', 'update')
+        resource: Resource being acted upon (e.g., 'workspace', 'api_key')
+        details: Optional additional details as a dictionary
+    """
+    log_entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "user_id": user_id,
+        "action": action,
+        "resource": resource,
+        "details": details or {},
+    }
+    logger.info("AUDIT: %s", log_entry)

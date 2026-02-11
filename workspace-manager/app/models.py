@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String
+from sqlalchemy import DateTime, Enum, ForeignKey, Integer, JSON, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -20,6 +20,16 @@ class User(Base):
         default="active",
     )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.now(timezone.utc),
+        onupdate=datetime.now(timezone.utc),
+    )
+    nexusgate_user_id: Mapped[str | None] = mapped_column(
+        String(36), unique=True, index=True, nullable=True
+    )
+    nexusgate_role: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     api_keys: Mapped[list["ApiKey"]] = relationship(
         "ApiKey",
@@ -41,6 +51,12 @@ class ApiKey(Base):
     key_prefix: Mapped[str] = mapped_column(String(32), index=True)
     key_hash: Mapped[str] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    nexusgate_token_id: Mapped[str | None] = mapped_column(
+        String(64), unique=True, index=True, nullable=True
+    )
+    name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     user: Mapped[User] = relationship("User", back_populates="api_keys")
 
@@ -58,5 +74,18 @@ class Workspace(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     purge_after: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.now(timezone.utc),
+        onupdate=datetime.now(timezone.utc),
+    )
+    metadata: Mapped[dict | None] = mapped_column(
+        JSON, nullable=True, server_default="{}"
+    )
+    nexusgate_service_id: Mapped[str | None] = mapped_column(
+        String(64), index=True, nullable=True
+    )
+    container_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    container_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     user: Mapped[User] = relationship("User", back_populates="workspaces")

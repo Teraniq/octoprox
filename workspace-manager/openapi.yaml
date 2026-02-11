@@ -1,0 +1,1023 @@
+openapi: 3.0.3
+info:
+  title: Octoprox API
+  description: |
+    Octoprox API for managing user workspaces and dedicated MCP servers with per-user API keys.
+    
+    ## Authentication
+    
+    All API endpoints (except health) require authentication via one of:
+    1. Session cookie (for browser requests)
+    2. `Authorization: Bearer <api_key>` header
+    3. `Authorization: Bearer <jwt_token>` header
+    
+    ## Rate Limiting
+    
+    API requests are rate-limited per IP address:
+    - General endpoints: 200 requests per minute
+    - Authentication endpoints: 60 requests per minute
+  version: 2.0.0
+  contact:
+    name: Octoprox Support
+servers:
+  - url: https://your-domain.com/api/v1
+    description: Production server
+  - url: http://localhost:8080/api/v1
+    description: Local development server
+
+security:
+  - BearerAuth: []
+  - SessionCookie: []
+
+paths:
+  # Health
+  /health:
+    get:
+      summary: Health Check
+      description: Returns the health status of the API and its dependencies
+      operationId: getHealth
+      security: []
+      responses:
+        '200':
+          description: Service is healthy or degraded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '503':
+          description: Service is unhealthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  # Users
+  /users:
+    get:
+      summary: List Users
+      description: |
+        List all users. Admin sees all users, regular users see only themselves.
+      operationId: listUsers
+      parameters:
+        - name: page
+          in: query
+          description: Page number
+          schema:
+            type: integer
+            default: 1
+        - name: per_page
+          in: query
+          description: Items per page (max 100)
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+        - name: status
+          in: query
+          description: Filter by status
+          schema:
+            type: string
+            enum: [active, inactive]
+        - name: role
+          in: query
+          description: Filter by role
+          schema:
+            type: string
+            enum: [admin, user]
+      responses:
+        '200':
+          description: List of users
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /users/{user_id}:
+    get:
+      summary: Get User
+      description: Get a specific user by ID. Admin or self only.
+      operationId: getUser
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          description: User ID
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: User details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserDetailResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+    put:
+      summary: Update User
+      description: |
+        Update a user. Admin only.
+        Cannot demote yourself from admin role.
+        Cannot deactivate the last admin.
+      operationId: updateUser
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          description: User ID
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateUserRequest'
+      responses:
+        '200':
+          description: Updated user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+    delete:
+      summary: Deactivate User
+      description: |
+        Deactivate a user. Admin only.
+        Cannot deactivate yourself.
+        Cannot deactivate the last admin.
+      operationId: deactivateUser
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          description: User ID
+          schema:
+            type: integer
+      responses:
+        '204':
+          description: User deactivated
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  # Workspaces
+  /workspaces:
+    get:
+      summary: List Workspaces
+      description: |
+        List all workspaces. Admin sees all, user sees own.
+        Deleted workspaces are filtered out by default.
+      operationId: listWorkspaces
+      parameters:
+        - name: page
+          in: query
+          description: Page number
+          schema:
+            type: integer
+            default: 1
+        - name: per_page
+          in: query
+          description: Items per page (max 100)
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+        - name: status
+          in: query
+          description: Filter by status
+          schema:
+            type: string
+            enum: [active, inactive, deleted]
+        - name: user_id
+          in: query
+          description: Filter by owner (admin only)
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: List of workspaces
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+    post:
+      summary: Create Workspace
+      description: Create a new workspace
+      operationId: createWorkspace
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWorkspaceRequest'
+      responses:
+        '201':
+          description: Workspace created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /workspaces/{workspace_id}:
+    get:
+      summary: Get Workspace
+      description: Get a specific workspace by ID. Admin or owner only.
+      operationId: getWorkspace
+      parameters:
+        - name: workspace_id
+          in: path
+          required: true
+          description: Workspace ID
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Workspace details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceDetailResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+    delete:
+      summary: Delete Workspace
+      description: |
+        Soft delete a workspace. Admin or owner only.
+        The workspace is marked as deleted and the container is stopped.
+      operationId: deleteWorkspace
+      parameters:
+        - name: workspace_id
+          in: path
+          required: true
+          description: Workspace ID
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Workspace deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  # API Keys
+  /api-keys:
+    get:
+      summary: List API Keys
+      description: |
+        List all API keys. Admin sees all, user sees own.
+        Full key_hash is never returned, only prefix.
+      operationId: listApiKeys
+      parameters:
+        - name: page
+          in: query
+          description: Page number
+          schema:
+            type: integer
+            default: 1
+        - name: per_page
+          in: query
+          description: Items per page (max 100)
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+        - name: user_id
+          in: query
+          description: Filter by owner (admin only)
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: List of API keys
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKeyListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+    post:
+      summary: Create API Key
+      description: |
+        Create a new API key. 
+        Non-admin users can only create keys for themselves.
+        The full API key is shown only once on creation.
+      operationId: createApiKey
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateApiKeyRequest'
+      responses:
+        '200':
+          description: API key created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKeyCreateResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /api-keys/{key_id}:
+    delete:
+      summary: Revoke API Key
+      description: Revoke an API key. Admin or owner only.
+      operationId: revokeApiKey
+      parameters:
+        - name: key_id
+          in: path
+          required: true
+          description: API Key ID
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: API key revoked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  # Authentication
+  /auth/introspect:
+    post:
+      summary: Token Introspection
+      description: |
+        Introspect a token to verify its validity and get user information.
+        RFC 7662 compliant.
+      operationId: introspectToken
+      security: []
+      parameters:
+        - name: X-Introspect-Secret
+          in: header
+          description: Optional introspection secret
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IntrospectRequest'
+      responses:
+        '200':
+          description: Token introspection result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IntrospectResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: Invalid introspect secret
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  # MCP Bridge
+  /mcp/tools:
+    get:
+      summary: List MCP Tools
+      description: List available MCP tools for a workspace
+      operationId: listMcpTools
+      parameters:
+        - name: workspace_id
+          in: query
+          description: Workspace ID to query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: List of MCP tools
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpToolsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /mcp/invoke:
+    post:
+      summary: Invoke MCP Tool
+      description: Invoke an MCP tool on a workspace. Admin or workspace owner only.
+      operationId: invokeMcpTool
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/McpInvokeRequest'
+      responses:
+        '200':
+          description: Tool invocation result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpInvokeResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        Bearer token authentication using either:
+        - API key (format: `mcp_<prefix>_<random>`)
+        - JWT token
+    SessionCookie:
+      type: apiKey
+      in: cookie
+      name: session
+      description: Session cookie for browser-based authentication
+
+  schemas:
+    # Request Schemas
+    UpdateUserRequest:
+      type: object
+      properties:
+        role:
+          type: string
+          enum: [admin, user]
+          description: New role for the user
+        is_active:
+          type: boolean
+          description: Activate or deactivate the user
+        nexusgate_user_id:
+          type: string
+          description: Link to NEXUSGATE user ID
+          example: "550e8400-e29b-41d4-a716-446655440000"
+
+    CreateWorkspaceRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          description: Workspace name (alphanumeric, hyphens, dots, underscores)
+          pattern: '^[a-zA-Z0-9._-]{1,128}$'
+          example: "my-workspace"
+        metadata:
+          type: object
+          description: Additional workspace metadata
+          additionalProperties: true
+
+    CreateApiKeyRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          description: Descriptive name for the key
+          example: "My Application"
+        user_id:
+          type: integer
+          description: Owner user ID (admin only)
+
+    IntrospectRequest:
+      type: object
+      required:
+        - token
+      properties:
+        token:
+          type: string
+          description: Token to introspect
+          example: "mcp_abc123_xyz789"
+
+    McpInvokeRequest:
+      type: object
+      required:
+        - workspace_id
+        - tool
+      properties:
+        workspace_id:
+          type: integer
+          description: Target workspace ID
+        tool:
+          type: string
+          description: Tool name to invoke
+          example: "git_status"
+        parameters:
+          type: object
+          description: Tool-specific parameters
+          additionalProperties: true
+
+    # Response Schemas
+    User:
+      type: object
+      properties:
+        id:
+          type: integer
+        username:
+          type: string
+        role:
+          type: string
+          enum: [admin, user]
+        is_active:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        nexusgate_user_id:
+          type: string
+          nullable: true
+        nexusgate_role:
+          type: string
+          nullable: true
+        last_synced_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    UserWithDetails:
+      allOf:
+        - $ref: '#/components/schemas/User'
+        - type: object
+          properties:
+            workspaces:
+              type: array
+              items:
+                $ref: '#/components/schemas/WorkspaceSummary'
+            api_keys:
+              type: array
+              items:
+                $ref: '#/components/schemas/ApiKeySummary'
+
+    Workspace:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        user_id:
+          type: integer
+        status:
+          type: string
+          enum: [active, inactive, deleted]
+        endpoint_url:
+          type: string
+          format: uri
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        metadata:
+          type: object
+          nullable: true
+        nexusgate_service_id:
+          type: string
+          nullable: true
+        container_id:
+          type: string
+          nullable: true
+        container_status:
+          type: string
+          nullable: true
+
+    WorkspaceSummary:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        status:
+          type: string
+        endpoint_url:
+          type: string
+          format: uri
+
+    WorkspaceDetail:
+      allOf:
+        - $ref: '#/components/schemas/Workspace'
+        - type: object
+          properties:
+            tools:
+              type: array
+              items:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  description:
+                    type: string
+
+    ApiKey:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        prefix:
+          type: string
+          description: First part of the API key (safe to display)
+          example: "mcp_abc123"
+        user_id:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        last_used_at:
+          type: string
+          format: date-time
+          nullable: true
+        nexusgate_token_id:
+          type: string
+          nullable: true
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    ApiKeySummary:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        prefix:
+          type: string
+
+    ApiKeyWithToken:
+      allOf:
+        - $ref: '#/components/schemas/ApiKey'
+        - type: object
+          properties:
+            api_key:
+              type: string
+              description: Full API key (shown only once)
+              example: "mcp_abc123_xyz789"
+            warning:
+              type: string
+              example: "This key will only be shown once. Store it securely."
+
+    McpTool:
+      type: object
+      properties:
+        name:
+          type: string
+          example: "git_status"
+        description:
+          type: string
+          example: "Get git repository status"
+
+    # Response Wrappers
+    PaginationMeta:
+      type: object
+      properties:
+        page:
+          type: integer
+        per_page:
+          type: integer
+        total:
+          type: integer
+
+    WrappedResponse:
+      type: object
+      properties:
+        data:
+          type: object
+        meta:
+          $ref: '#/components/schemas/PaginationMeta'
+
+    UserListResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            users:
+              type: array
+              items:
+                $ref: '#/components/schemas/User'
+        meta:
+          $ref: '#/components/schemas/PaginationMeta'
+
+    UserResponse:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/User'
+
+    UserDetailResponse:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/UserWithDetails'
+
+    WorkspaceListResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            workspaces:
+              type: array
+              items:
+                $ref: '#/components/schemas/Workspace'
+        meta:
+          $ref: '#/components/schemas/PaginationMeta'
+
+    WorkspaceResponse:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/Workspace'
+
+    WorkspaceDetailResponse:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/WorkspaceDetail'
+
+    ApiKeyListResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            api_keys:
+              type: array
+              items:
+                $ref: '#/components/schemas/ApiKey'
+        meta:
+          $ref: '#/components/schemas/PaginationMeta'
+
+    ApiKeyCreateResponse:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/ApiKeyWithToken'
+
+    IntrospectResponse:
+      type: object
+      properties:
+        active:
+          type: boolean
+        sub:
+          type: string
+          description: Subject (user ID)
+          nullable: true
+        username:
+          type: string
+          nullable: true
+        role:
+          type: string
+          nullable: true
+        token_type:
+          type: string
+          enum: [api_key, jwt]
+          nullable: true
+
+    McpToolsResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            tools:
+              type: array
+              items:
+                $ref: '#/components/schemas/McpTool'
+            count:
+              type: integer
+
+    McpInvokeResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            tool:
+              type: string
+            workspace_id:
+              type: integer
+            result:
+              type: object
+
+    DeleteResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            deleted:
+              type: boolean
+            id:
+              type: integer
+
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded, unhealthy]
+        timestamp:
+          type: string
+          format: date-time
+        components:
+          type: object
+          properties:
+            database:
+              type: object
+              properties:
+                status:
+                  type: string
+                response_time_ms:
+                  type: integer
+            docker:
+              type: object
+              properties:
+                status:
+                  type: string
+                version:
+                  type: string
+        workspaces:
+          type: object
+          properties:
+            total:
+              type: integer
+            active:
+              type: integer
+
+    # Error Schemas
+    ErrorResponse:
+      type: object
+      properties:
+        detail:
+          type: string
+        error:
+          type: string
+        retry_after:
+          type: integer
+
+  responses:
+    BadRequest:
+      description: Bad Request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            detail: "Invalid workspace name format"
+
+    Unauthorized:
+      description: Unauthorized
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            detail: "Not authenticated"
+
+    Forbidden:
+      description: Forbidden
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            detail: "Not authorized to access this resource"
+
+    NotFound:
+      description: Not Found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            detail: "User not found"
+
+    RateLimited:
+      description: Too Many Requests
+      headers:
+        Retry-After:
+          description: Seconds to wait before retrying
+          schema:
+            type: integer
+        X-RateLimit-Limit:
+          description: Maximum requests allowed
+          schema:
+            type: integer
+        X-RateLimit-Remaining:
+          description: Remaining requests in current window
+          schema:
+            type: integer
+        X-RateLimit-Reset:
+          description: Unix timestamp when limit resets
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: "Rate limit exceeded"
+            retry_after: 60
+
+  headers:
+    RateLimitHeaders:
+      X-RateLimit-Limit:
+        description: Maximum requests allowed
+        schema:
+          type: integer
+      X-RateLimit-Remaining:
+        description: Remaining requests in current window
+        schema:
+          type: integer
+      X-RateLimit-Reset:
+        description: Unix timestamp when limit resets
+        schema:
+          type: integer
