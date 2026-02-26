@@ -14,6 +14,23 @@ services:
     networks:
       - mcpnet
 
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    container_name: docker-socket-proxy
+    privileged: true
+    environment:
+      - CONTAINERS=1
+      - ALLOW_START=1
+      - ALLOW_STOP=1
+      - IMAGES=1
+      - VOLUMES=1
+      - NETWORKS=1
+      - POST=1
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+    networks:
+      - mcpnet
+
   workspace-manager:
     build: ./workspace-manager
     container_name: workspace-manager
@@ -29,6 +46,8 @@ services:
       - BOOTSTRAP_ADMIN_PASSWORD=${BOOTSTRAP_ADMIN_PASSWORD}
       - WORKSPACE_IMAGE=mcp-gitfs:latest
       - DOCKER_NETWORK=mcpnet
+      - DOCKER_HOST=tcp://docker-socket-proxy:2375
+      # Docker socket access is proxied through docker-socket-proxy to limit host exposure.
       # JWT Configuration for NEXUSGATE integration
       # SECURITY: JWT_SECRET_KEY must be at least 32 characters long
       # Generate with: openssl rand -base64 64
@@ -44,13 +63,14 @@ services:
       - ENFORCE_HTTPS=${ENFORCE_HTTPS:-false}
       - HSTS_MAX_AGE=${HSTS_MAX_AGE:-31536000}
       - HSTS_INCLUDE_SUBDOMAINS=${HSTS_INCLUDE_SUBDOMAINS:-true}
+    depends_on:
+      - docker-socket-proxy
     volumes:
       - manager-data:/app/data
-      # SECURITY WARNING: Docker socket access grants container full Docker control
-      # This is required for workspace provisioning but is a security risk.
-      # Mitigation: Use Docker socket proxy (e.g., tecnativa/docker-socket-proxy)
-      # or rootless Docker to limit exposure.
-      - /var/run/docker.sock:/var/run/docker.sock
+    read_only: true
+    tmpfs: ["/tmp:noexec,nosuid,size=100m"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.manager.rule=PathPrefix(`/app`) && !PathPrefix(`/app/internal`)"
@@ -60,6 +80,11 @@ services:
       - "traefik.http.services.manager.loadbalancer.server.port=8000"
     networks:
       - mcpnet
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
 
   mcp-gitfs:
     image: mcp-gitfs:latest

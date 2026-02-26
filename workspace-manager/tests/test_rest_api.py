@@ -7,12 +7,15 @@ This module tests all REST API v1 endpoints including:
 - Token introspection
 - Authentication flows (session, API key, JWT)
 """
+
 from __future__ import annotations
 
 import os
+import re
 import sys
 import pathlib
 from datetime import datetime, timedelta, timezone
+from typing import Iterator
 from unittest.mock import MagicMock, patch
 
 # Set required environment variables before any imports
@@ -20,6 +23,7 @@ os.environ.setdefault("BOOTSTRAP_ADMIN_USERNAME", "test_admin")
 os.environ.setdefault("BOOTSTRAP_ADMIN_PASSWORD", "test_admin_password")
 os.environ.setdefault("SECRET_KEY", "test_secret_key_for_testing_only_32chars")
 os.environ.setdefault("JWT_SECRET_KEY", "test_jwt_secret_key_for_testing_only_32chars")
+os.environ.setdefault("DATABASE_URL", "sqlite:///./test_manager.db")
 
 # Add parent to path for imports
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
@@ -28,10 +32,16 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from app import auth, services
 from app.db import Base, get_db
-from app.main import app
+from app.main import (
+    account_rate_limit,
+    app,
+    rate_limit,
+    rate_limit_storage,
+)
 from app.models import ApiKey, User, Workspace
 from app.provisioning import WorkspaceProvisioner
 
@@ -39,6 +49,7 @@ from app.provisioning import WorkspaceProvisioner
 # =============================================================================
 # Fake Provisioner for Testing
 # =============================================================================
+
 
 class FakeProvisioner:
     """Mock workspace provisioner for testing."""
@@ -65,10 +76,16 @@ class FakeProvisioner:
 # Fixtures
 # =============================================================================
 
+
 @pytest.fixture
 def test_db() -> Session:
     """Create a test database session."""
-    engine = create_engine("sqlite:///:memory:", future=True)
+    engine = create_engine(
+        "sqlite:///:memory:",
+        future=True,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
     Base.metadata.create_all(bind=engine)
     TestingSessionLocal = sessionmaker(bind=engine, future=True)
     db = TestingSessionLocal()
@@ -77,13 +94,25 @@ def test_db() -> Session:
 
 
 @pytest.fixture
-def client(test_db: Session) -> TestClient:
+def client(test_db: Session) -> Iterator[TestClient]:
     """Create a test client with database override."""
+
     def override_get_db():
         yield test_db
 
     app.dependency_overrides[get_db] = override_get_db
-    return TestClient(app)
+    app.state.provisioner = FakeProvisioner()
+
+    rate_limit_storage.clear()
+    rate_limit.clear()
+    account_rate_limit.clear()
+    with TestClient(app) as client_instance:
+        yield client_instance
+
+    rate_limit_storage.clear()
+    rate_limit.clear()
+    account_rate_limit.clear()
+    app.dependency_overrides.clear()
 
 
 @pytest.fixture
@@ -143,11 +172,16 @@ def admin_workspace(test_db: Session, test_admin: User) -> Workspace:
 # Helper Functions
 # =============================================================================
 
+
 def login_user(client: TestClient, username: str, password: str) -> None:
     """Login a user via the login form and set session."""
     # First get the login page to obtain CSRF token
     response = client.get("/login")
-    csrf_token = client.cookies.get("csrftoken", "")
+    match = re.search(
+        r'name=["\']csrf_token["\']\s+value=["\']([^"\']+)["\']', response.text
+    )
+    assert match, "CSRF token missing from login page"
+    csrf_token = match.group(1)
 
     response = client.post(
         "/login",
@@ -160,6 +194,7 @@ def login_user(client: TestClient, username: str, password: str) -> None:
 # =============================================================================
 # User Endpoint Tests (12.10.2)
 # =============================================================================
+
 
 class TestUserEndpoints:
     """Test User API endpoints."""
@@ -193,7 +228,9 @@ class TestUserEndpoints:
         assert len(data["data"]["users"]) == 1
         assert data["data"]["users"][0]["username"] == test_user.username
 
-    def test_list_users_with_pagination(self, client: TestClient, test_admin: User) -> None:
+    def test_list_users_with_pagination(
+        self, client: TestClient, test_admin: User
+    ) -> None:
         """GET /api/v1/users - Test user list pagination."""
         login_user(client, test_admin.username, "adminpass")
         response = client.get("/api/v1/users?page=1&per_page=10")
@@ -207,7 +244,9 @@ class TestUserEndpoints:
         assert "total" in pagination
         assert "total_pages" in pagination
 
-    def test_list_users_with_filters(self, client: TestClient, test_admin: User) -> None:
+    def test_list_users_with_filters(
+        self, client: TestClient, test_admin: User
+    ) -> None:
         """GET /api/v1/users - Test user list with status and role filters."""
         login_user(client, test_admin.username, "adminpass")
         response = client.get("/api/v1/users?status=active&role=admin")
@@ -245,7 +284,9 @@ class TestUserEndpoints:
         data = response.json()
         assert data["data"]["username"] == test_user.username
 
-    def test_get_nonexistent_user_returns_404(self, client: TestClient, test_admin: User) -> None:
+    def test_get_nonexistent_user_returns_404(
+        self, client: TestClient, test_admin: User
+    ) -> None:
         """GET /api/v1/users/{id} - Getting non-existent user returns 404."""
         login_user(client, test_admin.username, "adminpass")
         response = client.get("/api/v1/users/99999")
@@ -263,7 +304,9 @@ class TestUserEndpoints:
         assert response.status_code == 200, f"Update user failed: {response.text}"
         assert response.json()["data"]["role"] == "admin"
 
-    def test_update_user_as_user_returns_403(self, client: TestClient, test_user: User) -> None:
+    def test_update_user_as_user_returns_403(
+        self, client: TestClient, test_user: User
+    ) -> None:
         """PUT /api/v1/users/{id} - User cannot update users."""
         login_user(client, test_user.username, "testpass")
         response = client.put(
@@ -272,7 +315,9 @@ class TestUserEndpoints:
         )
         assert response.status_code == 403, f"Expected 403, got {response.status_code}"
 
-    def test_prevent_self_demotion_from_admin(self, client: TestClient, test_admin: User) -> None:
+    def test_prevent_self_demotion_from_admin(
+        self, client: TestClient, test_admin: User
+    ) -> None:
         """PUT /api/v1/users/{id} - Admin cannot demote themselves."""
         login_user(client, test_admin.username, "adminpass")
         response = client.put(
@@ -327,6 +372,7 @@ class TestUserEndpoints:
 # Workspace Endpoint Tests (12.10.3)
 # =============================================================================
 
+
 class TestWorkspaceEndpoints:
     """Test Workspace API endpoints."""
 
@@ -354,7 +400,9 @@ class TestWorkspaceEndpoints:
         for ws in workspaces:
             assert ws["user_id"] == test_user.id
 
-    def test_list_workspaces_with_pagination(self, client: TestClient, test_user: User) -> None:
+    def test_list_workspaces_with_pagination(
+        self, client: TestClient, test_user: User
+    ) -> None:
         """GET /api/v1/workspaces - Test workspace list pagination."""
         login_user(client, test_user.username, "testpass")
         response = client.get("/api/v1/workspaces?page=1&per_page=5")
@@ -363,7 +411,9 @@ class TestWorkspaceEndpoints:
         assert "meta" in data
         assert "pagination" in data["meta"]
 
-    def test_create_workspace_succeeds(self, client: TestClient, test_user: User) -> None:
+    def test_create_workspace_succeeds(
+        self, client: TestClient, test_user: User
+    ) -> None:
         """POST /api/v1/workspaces - User can create workspace."""
         login_user(client, test_user.username, "testpass")
         response = client.post("/api/v1/workspaces", json={"name": "new-ws"})
@@ -396,7 +446,9 @@ class TestWorkspaceEndpoints:
         response = client.post("/api/v1/workspaces", json={"name": test_workspace.name})
         assert response.status_code == 400, f"Expected 400, got {response.status_code}"
 
-    def test_create_workspace_with_metadata(self, client: TestClient, test_user: User) -> None:
+    def test_create_workspace_with_metadata(
+        self, client: TestClient, test_user: User
+    ) -> None:
         """POST /api/v1/workspaces - User can create workspace with metadata."""
         login_user(client, test_user.username, "testpass")
         response = client.post(
@@ -460,7 +512,9 @@ class TestWorkspaceEndpoints:
         """DELETE /api/v1/workspaces/{id} - Admin can delete any workspace."""
         # Create a workspace owned by test_user
         provisioner = FakeProvisioner()
-        ws = services.create_workspace(test_db, provisioner, test_user, "ws-for-admin-delete")
+        ws = services.create_workspace(
+            test_db, provisioner, test_user, "ws-for-admin-delete"
+        )
 
         login_user(client, test_admin.username, "adminpass")
         response = client.delete(f"/api/v1/workspaces/{ws.id}")
@@ -478,6 +532,7 @@ class TestWorkspaceEndpoints:
 # =============================================================================
 # API Key Endpoint Tests (12.10.4)
 # =============================================================================
+
 
 class TestAPIKeyEndpoints:
     """Test API Key API endpoints."""
@@ -505,7 +560,9 @@ class TestAPIKeyEndpoints:
         for key in data["data"]["api_keys"]:
             assert key["user_id"] == test_user.id
 
-    def test_create_api_key_for_self_succeeds(self, client: TestClient, test_user: User) -> None:
+    def test_create_api_key_for_self_succeeds(
+        self, client: TestClient, test_user: User
+    ) -> None:
         """POST /api/v1/api-keys - User can create API key for self."""
         login_user(client, test_user.username, "testpass")
         response = client.post("/api/v1/api-keys", json={"name": "My Key"})
@@ -579,6 +636,7 @@ class TestAPIKeyEndpoints:
 # Token Introspection Tests (12.10.5)
 # =============================================================================
 
+
 class TestTokenIntrospection:
     """Test token introspection endpoint."""
 
@@ -611,7 +669,9 @@ class TestTokenIntrospection:
         assert data["token_type"] == "jwt"
         assert data["sub"] == str(test_user.id)
 
-    def test_introspect_invalid_token_returns_inactive(self, client: TestClient) -> None:
+    def test_introspect_invalid_token_returns_inactive(
+        self, client: TestClient
+    ) -> None:
         """POST /api/v1/auth/introspect - Invalid token introspection returns inactive."""
         response = client.post("/api/v1/auth/introspect", json={"token": "invalid"})
         assert response.status_code == 200, f"Introspect failed: {response.text}"
@@ -623,7 +683,9 @@ class TestTokenIntrospection:
         assert response.status_code == 200
         assert response.json()["active"] is False
 
-    def test_introspect_with_secret_header(self, client: TestClient, test_api_key: dict) -> None:
+    def test_introspect_with_secret_header(
+        self, client: TestClient, test_api_key: dict
+    ) -> None:
         """POST /api/v1/auth/introspect - Test with optional secret header."""
         # This test validates the endpoint accepts the header
         response = client.post(
@@ -639,21 +701,26 @@ class TestTokenIntrospection:
 # Authentication Flow Tests (12.10.7)
 # =============================================================================
 
+
 class TestAuthenticationFlows:
     """Test different authentication methods."""
 
-    def test_session_based_authentication(self, client: TestClient, test_user: User) -> None:
+    def test_session_based_authentication(
+        self, client: TestClient, test_user: User
+    ) -> None:
         """Test session-based authentication via login form."""
         # Login first
         login_user(client, test_user.username, "testpass")
-        
+
         # Access protected endpoint
         response = client.get("/api/v1/users")
         assert response.status_code == 200, f"Session auth failed: {response.text}"
         data = response.json()
         assert "data" in data
 
-    def test_api_key_authentication(self, client: TestClient, test_api_key: dict) -> None:
+    def test_api_key_authentication(
+        self, client: TestClient, test_api_key: dict
+    ) -> None:
         """Test API key authentication (mcp_* prefix)."""
         response = client.get(
             "/api/v1/users",
@@ -664,7 +731,9 @@ class TestAuthenticationFlows:
         assert "data" in data
         assert "users" in data["data"]
 
-    def test_jwt_bearer_authentication(self, client: TestClient, test_user: User) -> None:
+    def test_jwt_bearer_authentication(
+        self, client: TestClient, test_user: User
+    ) -> None:
         """Test JWT Bearer authentication."""
         token = auth.create_access_token(
             str(test_user.id), test_user.username, test_user.role
@@ -681,7 +750,7 @@ class TestAuthenticationFlows:
         """Test 401 when all authentication methods fail."""
         # Clear any existing session/cookies
         client.cookies.clear()
-        
+
         response = client.get("/api/v1/users")
         assert response.status_code == 401, f"Expected 401, got {response.status_code}"
         assert "WWW-Authenticate" in response.headers
@@ -716,7 +785,9 @@ class TestAuthenticationFlows:
             "iat": now - timedelta(hours=2),
             "exp": now - timedelta(hours=1),  # Expired 1 hour ago
         }
-        expired_token = jwt_lib.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
+        expired_token = jwt_lib.encode(
+            payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm
+        )
 
         response = client.get(
             "/api/v1/users",
@@ -739,7 +810,9 @@ class TestAuthenticationFlows:
             "/api/v1/users",
             headers={"Authorization": f"Bearer {raw_token}"},
         )
-        assert response.status_code == 401, f"Expected 401 for inactive user, got {response.status_code}"
+        assert response.status_code == 401, (
+            f"Expected 401 for inactive user, got {response.status_code}"
+        )
 
     def test_revoked_key_no_longer_works(
         self, client: TestClient, test_user: User, test_api_key: dict
@@ -764,12 +837,15 @@ class TestAuthenticationFlows:
             "/api/v1/users",
             headers={"Authorization": f"Bearer {raw_key}"},
         )
-        assert response.status_code == 401, f"Expected 401 for revoked key, got {response.status_code}"
+        assert response.status_code == 401, (
+            f"Expected 401 for revoked key, got {response.status_code}"
+        )
 
 
 # =============================================================================
 # Health Endpoint Tests
 # =============================================================================
+
 
 class TestHealthEndpoint:
     """Test health check endpoint."""
@@ -805,20 +881,21 @@ class TestHealthEndpoint:
 # Additional Edge Case Tests
 # =============================================================================
 
+
 class TestEdgeCases:
     """Test edge cases and error scenarios."""
 
     def test_api_response_structure(self, client: TestClient, test_user: User) -> None:
         """Test that all API responses have consistent structure."""
         login_user(client, test_user.username, "testpass")
-        
+
         # Test various endpoints for consistent response structure
         endpoints = [
             "/api/v1/users",
             "/api/v1/workspaces",
             "/api/v1/api-keys",
         ]
-        
+
         for endpoint in endpoints:
             response = client.get(endpoint)
             assert response.status_code == 200, f"{endpoint} failed"
@@ -828,24 +905,28 @@ class TestEdgeCases:
     def test_pagination_bounds(self, client: TestClient, test_admin: User) -> None:
         """Test pagination with boundary values."""
         login_user(client, test_admin.username, "adminpass")
-        
+
         # Test with page=0 (should still work or return error gracefully)
         response = client.get("/api/v1/users?page=0&per_page=10")
         assert response.status_code in [200, 422]  # Either success or validation error
 
-    def test_pagination_max_per_page(self, client: TestClient, test_admin: User) -> None:
+    def test_pagination_max_per_page(
+        self, client: TestClient, test_admin: User
+    ) -> None:
         """Test pagination max per_page limit."""
         login_user(client, test_admin.username, "adminpass")
-        
+
         # Test with very high per_page
         response = client.get("/api/v1/users?page=1&per_page=1000")
         # Should either cap at max or return validation error
         assert response.status_code in [200, 422]
 
-    def test_concurrent_api_key_creation(self, client: TestClient, test_user: User) -> None:
+    def test_concurrent_api_key_creation(
+        self, client: TestClient, test_user: User
+    ) -> None:
         """Test creating multiple API keys for same user."""
         login_user(client, test_user.username, "testpass")
-        
+
         # Create multiple keys
         for i in range(3):
             response = client.post("/api/v1/api-keys", json={"name": f"Key {i}"})
@@ -857,10 +938,12 @@ class TestEdgeCases:
         # Should have at least 3 keys (plus any from fixtures)
         assert len(data["data"]["api_keys"]) >= 3
 
-    def test_workspace_name_validation_edge_cases(self, client: TestClient, test_user: User) -> None:
+    def test_workspace_name_validation_edge_cases(
+        self, client: TestClient, test_user: User
+    ) -> None:
         """Test workspace name validation with edge cases."""
         login_user(client, test_user.username, "testpass")
-        
+
         # Test various invalid names
         invalid_names = [
             "a" * 129,  # Too long
@@ -869,15 +952,17 @@ class TestEdgeCases:
             " test",  # Leading space
             "test ",  # Trailing space
         ]
-        
+
         for name in invalid_names:
             response = client.post("/api/v1/workspaces", json={"name": name})
             assert response.status_code == 400, f"Expected 400 for name: {name}"
 
-    def test_special_characters_in_workspace_name(self, client: TestClient, test_user: User) -> None:
+    def test_special_characters_in_workspace_name(
+        self, client: TestClient, test_user: User
+    ) -> None:
         """Test valid special characters in workspace name."""
         login_user(client, test_user.username, "testpass")
-        
+
         # Valid names with special characters
         valid_names = [
             "test-name",
@@ -886,7 +971,7 @@ class TestEdgeCases:
             "test123",
             "TestName",
         ]
-        
+
         for i, name in enumerate(valid_names):
             # Add suffix to avoid conflicts
             unique_name = f"{name}-{i}"

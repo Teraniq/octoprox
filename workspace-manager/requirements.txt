@@ -6,7 +6,6 @@ sqlalchemy==2.0.46
 passlib[argon2]==1.7.4
 docker==7.1.0
 itsdangerous==2.2.0
-pytest==9.0.2
 
 # NEXUSGATE Integration Dependencies
 PyJWT>=2.8.0

@@ -60,7 +60,7 @@ def test_api_key_hash_verification() -> None:
     db.add(user)
     db.commit()
     key, token = services.create_api_key(db, user)
-    assert auth.verify_api_key(token, key.key_hash)
+    assert auth.verify_api_key_hash(token, key.key_hash)
 
 
 def test_introspection_denies_invalid_tokens() -> None:
@@ -120,4 +120,3 @@ def test_deactivate_user_commits_even_if_provisioner_fails() -> None:
     assert user.status == "inactive"
     status = db.query(Workspace).one().status
     assert status == "inactive"
-

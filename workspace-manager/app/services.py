@@ -20,7 +20,9 @@ WORKSPACE_NAME_RE = re.compile(r"^[a-zA-Z0-9._-]{1,128}$")
 def validate_workspace_name(db: Session, name: str) -> tuple[bool, str]:
     if not WORKSPACE_NAME_RE.match(name):
         return False, "Name must match ^[a-zA-Z0-9._-]{1,128}$"
-    exists = db.execute(select(Workspace).where(Workspace.name == name)).scalar_one_or_none()
+    exists = db.execute(
+        select(Workspace).where(Workspace.name == name)
+    ).scalar_one_or_none()
     if exists:
         return False, "Name already exists"
     return True, "Name is available"
@@ -43,7 +45,7 @@ def create_workspace(
     except Exception:
         db.rollback()
         raise
-    
+
     try:
         provisioner.create_workspace(workspace)
     except Exception:
@@ -64,7 +66,9 @@ def soft_delete_workspace(
         return
     workspace.status = "deleted"
     workspace.deleted_at = datetime.now(timezone.utc)
-    workspace.purge_after = datetime.now(timezone.utc) + timedelta(hours=purge_after_hours)
+    workspace.purge_after = datetime.now(timezone.utc) + timedelta(
+        hours=purge_after_hours
+    )
     db.add(workspace)
     try:
         db.commit()
@@ -78,7 +82,8 @@ def soft_delete_workspace(
         # The purge job will retry cleanup later
         logger.warning(
             "Failed to delete workspace container %s during soft delete: %s",
-            workspace.name, str(e)
+            workspace.name,
+            str(e),
         )
 
 
@@ -104,10 +109,7 @@ def purge_due_workspaces(
         except Exception as e:
             # Continue with other workspaces even if one fails
             # The workspace will be retried on next purge cycle
-            logger.exception(
-                "Failed to purge workspace %s: %s",
-                workspace.name, str(e)
-            )
+            logger.exception("Failed to purge workspace %s: %s", workspace.name, str(e))
             db.rollback()
             continue
     if removed:
@@ -133,7 +135,7 @@ def deactivate_user(
     user: User,
 ) -> None:
     """Deactivate a user and their workspaces.
-    
+
     This function deactivates the user account and attempts to delete all
     associated workspace containers. Exceptions during workspace deletion
     are logged but do not block the deactivation process.
@@ -150,7 +152,7 @@ def deactivate_user(
     except Exception:
         db.rollback()
         raise
-    
+
     # Attempt to delete workspaces - failures are logged but don't block deactivation
     failures: list[tuple[str, str]] = []
     for workspace in workspaces:
@@ -158,26 +160,28 @@ def deactivate_user(
             provisioner.delete_workspace(workspace)
             logger.info(
                 "Successfully deleted workspace %s during user deactivation",
-                workspace.name
+                workspace.name,
             )
         except Exception as e:
             # Log and continue - workspace containers may already be stopped
             logger.exception(
                 "Failed to delete workspace %s during user deactivation: %s",
-                workspace.name, str(e)
+                workspace.name,
+                str(e),
             )
             failures.append((workspace.name, str(e)))
-    
+
     if failures:
         logger.error(
             "User deactivation completed with %d workspace deletion failures: %s",
             len(failures),
-            ", ".join(name for name, _ in failures)
+            ", ".join(name for name, _ in failures),
         )
     else:
         logger.info(
             "User deactivation completed successfully for user %s (%d workspaces processed)",
-            user.username, len(workspaces)
+            user.username,
+            len(workspaces),
         )
 
 
@@ -187,7 +191,7 @@ def introspect_token(db: Session, token: str) -> dict:
         return {"active": False}
     keys = db.execute(select(ApiKey).where(ApiKey.key_prefix == prefix)).scalars().all()
     for key in keys:
-        if auth.verify_api_key(token, key.key_hash):
+        if auth.verify_api_key_hash(token, key.key_hash):
             if key.user.status != "active":
                 return {"active": False}
             return {"active": True, "user_id": str(key.user_id), "role": key.user.role}
@@ -207,21 +211,21 @@ def list_users(
     role: str | None = None,
 ) -> tuple[list[User], int]:
     """List users with optional filtering and pagination.
-    
+
     Args:
         db: Database session
         page: Page number (1-indexed)
         per_page: Number of items per page
         status: Optional filter by user status
         role: Optional filter by user role
-        
+
     Returns:
         Tuple of (users list, total count)
     """
     # Build base query
     query = select(User)
     count_query = select(func.count(User.id))
-    
+
     # Apply filters
     if status is not None:
         query = query.where(User.status == status)
@@ -229,17 +233,17 @@ def list_users(
     if role is not None:
         query = query.where(User.role == role)
         count_query = count_query.where(User.role == role)
-    
+
     # Get total count
     total = db.execute(count_query).scalar_one()
-    
+
     # Apply pagination
     offset = (page - 1) * per_page
     query = query.offset(offset).limit(per_page)
-    
+
     # Execute query
     users = list(db.execute(query).scalars().all())
-    
+
     return users, total
 
 
@@ -251,14 +255,14 @@ def update_user(
     nexusgate_user_id: str | None = None,
 ) -> User:
     """Update user fields.
-    
+
     Args:
         db: Database session
         user: User to update
         role: Optional new role
         status: Optional new status
         nexusgate_user_id: Optional NEXUSGATE user ID
-        
+
     Returns:
         Updated user
     """
@@ -268,9 +272,9 @@ def update_user(
         user.status = status
     if nexusgate_user_id is not None:
         user.nexusgate_user_id = nexusgate_user_id
-    
+
     user.updated_at = datetime.now(timezone.utc)
-    
+
     db.add(user)
     try:
         db.commit()
@@ -278,7 +282,7 @@ def update_user(
     except Exception:
         db.rollback()
         raise
-    
+
     return user
 
 
@@ -295,41 +299,41 @@ def list_workspaces(
     include_deleted: bool = False,
 ) -> tuple[list[Workspace], int]:
     """List workspaces with optional filtering and pagination.
-    
+
     Args:
         db: Database session
         user_id: Optional filter by user ID
         page: Page number (1-indexed)
         per_page: Number of items per page
         include_deleted: Whether to include deleted workspaces
-        
+
     Returns:
         Tuple of (workspaces list, total count)
     """
     # Build base query
     query = select(Workspace)
     count_query = select(func.count(Workspace.id))
-    
+
     # Apply user filter
     if user_id is not None:
         query = query.where(Workspace.user_id == user_id)
         count_query = count_query.where(Workspace.user_id == user_id)
-    
+
     # Filter out deleted workspaces by default
     if not include_deleted:
         query = query.where(Workspace.deleted_at.is_(None))
         count_query = count_query.where(Workspace.deleted_at.is_(None))
-    
+
     # Get total count
     total = db.execute(count_query).scalar_one()
-    
+
     # Apply pagination
     offset = (page - 1) * per_page
     query = query.offset(offset).limit(per_page)
-    
+
     # Execute query
     workspaces = list(db.execute(query).scalars().all())
-    
+
     return workspaces, total
 
 
@@ -341,23 +345,23 @@ def create_workspace_api(
     metadata: dict | None = None,
 ) -> Workspace:
     """Create a new workspace with optional metadata.
-    
+
     Args:
         db: Database session
         provisioner: Workspace provisioner instance
         user: User creating the workspace
         name: Workspace name
         metadata: Optional metadata dictionary
-        
+
     Returns:
         Created workspace
     """
     # Call existing create_workspace function
     workspace = create_workspace(db, provisioner, user, name)
-    
+
     # Set metadata if provided
     if metadata is not None:
-        workspace.metadata = metadata
+        workspace.metadata_json = metadata
         db.add(workspace)
         try:
             db.commit()
@@ -365,7 +369,7 @@ def create_workspace_api(
         except Exception:
             db.rollback()
             raise
-    
+
     return workspace
 
 
@@ -381,35 +385,35 @@ def list_api_keys(
     per_page: int = 20,
 ) -> tuple[list[ApiKey], int]:
     """List API keys with optional filtering and pagination.
-    
+
     Args:
         db: Database session
         user_id: Optional filter by user ID
         page: Page number (1-indexed)
         per_page: Number of items per page
-        
+
     Returns:
         Tuple of (api keys list, total count)
     """
     # Build base query
     query = select(ApiKey)
     count_query = select(func.count(ApiKey.id))
-    
+
     # Apply user filter
     if user_id is not None:
         query = query.where(ApiKey.user_id == user_id)
         count_query = count_query.where(ApiKey.user_id == user_id)
-    
+
     # Get total count
     total = db.execute(count_query).scalar_one()
-    
+
     # Apply pagination
     offset = (page - 1) * per_page
     query = query.offset(offset).limit(per_page)
-    
+
     # Execute query
     api_keys = list(db.execute(query).scalars().all())
-    
+
     return api_keys, total
 
 
@@ -420,13 +424,13 @@ def create_api_key(
     nexusgate_token_id: str | None = None,
 ) -> tuple[ApiKey, str]:
     """Create a new API key for a user.
-    
+
     Args:
         db: Database session
         user: User to create key for
         name: Optional name for the API key
         nexusgate_token_id: Optional NEXUSGATE token ID
-        
+
     Returns:
         Tuple of (ApiKey, raw_token)
     """
@@ -436,13 +440,13 @@ def create_api_key(
         key_prefix=payload.prefix,
         key_hash=payload.hash,
     )
-    
+
     # Set optional fields if provided
     if name is not None:
         key.name = name
     if nexusgate_token_id is not None:
         key.nexusgate_token_id = nexusgate_token_id
-    
+
     db.add(key)
     try:
         db.commit()
@@ -455,7 +459,7 @@ def create_api_key(
 
 def revoke_api_key(db: Session, api_key: ApiKey) -> None:
     """Revoke (delete) an API key.
-    
+
     Args:
         db: Database session
         api_key: API key to revoke
@@ -480,7 +484,7 @@ def audit_log(
     details: dict | None = None,
 ) -> None:
     """Create a structured audit log entry.
-    
+
     Args:
         user_id: ID of the user performing the action, or None
         action: Action being performed (e.g., 'create', 'delete', 'update')

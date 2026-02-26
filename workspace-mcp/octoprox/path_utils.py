@@ -7,7 +7,7 @@ import tempfile
 from typing import Any
 
 # Workspace root path
-WORKSPACE_ROOT = pathlib.Path("/workspace").resolve()
+WORKSPACE_ROOT = pathlib.Path(os.getenv("WORKSPACE_ROOT", "/workspace")).resolve()
 
 
 def _resolve_path(path: str) -> pathlib.Path:

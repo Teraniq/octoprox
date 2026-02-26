@@ -7,14 +7,17 @@ to ensure the system works end-to-end.
 from __future__ import annotations
 
 import os
+import re
 import sys
 import pathlib
+from typing import Iterator
 
 # Set required environment variables before any imports
 os.environ.setdefault("BOOTSTRAP_ADMIN_USERNAME", "test_admin")
 os.environ.setdefault("BOOTSTRAP_ADMIN_PASSWORD", "test_admin_password")
 os.environ.setdefault("SECRET_KEY", "test_secret_key_for_testing_only_32chars")
 os.environ.setdefault("JWT_SECRET_KEY", "test_jwt_secret_key_for_testing_only_32chars")
+os.environ.setdefault("DATABASE_URL", "sqlite:///./test_manager.db")
 
 # Add parent to path for imports
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
@@ -23,16 +26,23 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from app import auth, services
 from app.db import Base, get_db
-from app.main import app
+from app.main import (
+    account_rate_limit,
+    app,
+    rate_limit,
+    rate_limit_storage,
+)
 from app.models import ApiKey, User, Workspace
 
 
 # =============================================================================
 # Fake Provisioner for Testing
 # =============================================================================
+
 
 class FakeProvisioner:
     """Mock workspace provisioner for testing."""
@@ -59,10 +69,16 @@ class FakeProvisioner:
 # Fixtures
 # =============================================================================
 
+
 @pytest.fixture
 def test_db() -> Session:
     """Create a test database session."""
-    engine = create_engine("sqlite:///:memory:", future=True)
+    engine = create_engine(
+        "sqlite:///:memory:",
+        future=True,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
     Base.metadata.create_all(bind=engine)
     TestingSessionLocal = sessionmaker(bind=engine, future=True)
     db = TestingSessionLocal()
@@ -71,13 +87,25 @@ def test_db() -> Session:
 
 
 @pytest.fixture
-def client(test_db: Session) -> TestClient:
+def client(test_db: Session) -> Iterator[TestClient]:
     """Create a test client with database override."""
+
     def override_get_db():
         yield test_db
 
     app.dependency_overrides[get_db] = override_get_db
-    return TestClient(app)
+    app.state.provisioner = FakeProvisioner()
+
+    rate_limit_storage.clear()
+    rate_limit.clear()
+    account_rate_limit.clear()
+    with TestClient(app) as client_instance:
+        yield client_instance
+
+    rate_limit_storage.clear()
+    rate_limit.clear()
+    account_rate_limit.clear()
+    app.dependency_overrides.clear()
 
 
 @pytest.fixture
@@ -86,10 +114,22 @@ def provisioner() -> FakeProvisioner:
     return FakeProvisioner()
 
 
+CSRF_TOKEN_PATTERN = re.compile(
+    r'name=["\']csrf_token["\']\s+value=["\']([^"\']+)["\']'
+)
+
+
+def fetch_csrf_token(client: TestClient, path: str) -> str:
+    """Fetch and parse a CSRF token from the given page."""
+    response = client.get(path)
+    match = CSRF_TOKEN_PATTERN.search(response.text)
+    assert match, f"CSRF token missing from {path}"
+    return match.group(1)
+
+
 def login_user(client: TestClient, username: str, password: str) -> None:
     """Login a user via the login form and set session."""
-    response = client.get("/login")
-    csrf_token = client.cookies.get("csrftoken", "")
+    csrf_token = fetch_csrf_token(client, "/login")
 
     response = client.post(
         "/login",
@@ -102,6 +142,7 @@ def login_user(client: TestClient, username: str, password: str) -> None:
 # =============================================================================
 # User Lifecycle Tests
 # =============================================================================
+
 
 class TestUserLifecycle:
     """Test complete user lifecycle from creation to deactivation."""
@@ -123,17 +164,20 @@ class TestUserLifecycle:
         login_user(client, admin.username, "adminpass")
 
         # Step 3: Create a new user via admin endpoint
+        csrf_token = fetch_csrf_token(client, "/admin/users")
         response = client.post(
             "/admin/users",
             data={
                 "username": "lifecycleuser",
                 "password": "userpass",
                 "role": "user",
-                "csrf_token": client.cookies.get("csrftoken", ""),
+                "csrf_token": csrf_token,
             },
             follow_redirects=False,
         )
-        assert response.status_code in [302, 303], f"Create user failed: {response.text}"
+        assert response.status_code in [302, 303], (
+            f"Create user failed: {response.text}"
+        )
 
         # Verify user was created
         new_user = test_db.query(User).filter_by(username="lifecycleuser").first()
@@ -178,7 +222,9 @@ class TestUserLifecycle:
         test_db.refresh(new_user)
         assert new_user.status == "inactive"
 
-    def test_user_cannot_self_promote(self, client: TestClient, test_db: Session) -> None:
+    def test_user_cannot_self_promote(
+        self, client: TestClient, test_db: Session
+    ) -> None:
         """Test that a user cannot promote themselves to admin."""
         # Create a regular user
         user = User(
@@ -248,6 +294,7 @@ class TestUserLifecycle:
 # Workspace Lifecycle Tests
 # =============================================================================
 
+
 class TestWorkspaceLifecycle:
     """Test complete workspace lifecycle from creation to deletion."""
 
@@ -300,7 +347,11 @@ class TestWorkspaceLifecycle:
 
         response = client.post(
             "/api/v1/mcp/invoke",
-            json={"workspace_id": ws_id, "tool": "read_file", "params": {"path": "/test"}},
+            json={
+                "workspace_id": ws_id,
+                "tool": "read_file",
+                "params": {"path": "/test"},
+            },
         )
         assert response.status_code == 200
 
@@ -320,7 +371,9 @@ class TestWorkspaceLifecycle:
         ws_names = [ws["name"] for ws in data["data"]["workspaces"]]
         assert "my-workspace" not in ws_names
 
-    def test_workspace_name_validation(self, client: TestClient, test_db: Session) -> None:
+    def test_workspace_name_validation(
+        self, client: TestClient, test_db: Session
+    ) -> None:
         """Test workspace name validation rules."""
         # Create a user
         user = User(
@@ -350,8 +403,11 @@ class TestWorkspaceLifecycle:
         # Test valid names
         valid_names = ["valid-ws", "valid_ws", "valid.ws", "validws123", "a" * 128]
         for i, name in enumerate(valid_names):
-            response = client.post("/api/v1/workspaces", json={"name": f"{name}-{i}"})
-            assert response.status_code == 201, f"Name '{name}' should be accepted"
+            workspace_name = name if len(name) == 128 else f"{name}-{i}"
+            response = client.post("/api/v1/workspaces", json={"name": workspace_name})
+            assert response.status_code == 201, (
+                f"Name '{workspace_name}' should be accepted"
+            )
 
     def test_admin_can_manage_all_workspaces(
         self, client: TestClient, test_db: Session, provisioner: FakeProvisioner
@@ -400,6 +456,7 @@ class TestWorkspaceLifecycle:
 # =============================================================================
 # API Key Lifecycle Tests
 # =============================================================================
+
 
 class TestAPIKeyLifecycle:
     """Test complete API key lifecycle from creation to revocation."""
@@ -515,7 +572,9 @@ class TestAPIKeyLifecycle:
         data = response.json()
         assert data["active"] is True
 
-    def test_multiple_api_keys_per_user(self, client: TestClient, test_db: Session) -> None:
+    def test_multiple_api_keys_per_user(
+        self, client: TestClient, test_db: Session
+    ) -> None:
         """Test that a user can have multiple API keys."""
         # Create a user
         user = User(
@@ -548,7 +607,9 @@ class TestAPIKeyLifecycle:
                 "/api/v1/users",
                 headers={"Authorization": f"Bearer {key_data['token']}"},
             )
-            assert response.status_code == 200, f"Key {key_data['obj'].name} should work"
+            assert response.status_code == 200, (
+                f"Key {key_data['obj'].name} should work"
+            )
 
         # Revoke one key
         response = client.delete(f"/api/v1/api-keys/{keys[0]['obj'].id}")
@@ -567,12 +628,15 @@ class TestAPIKeyLifecycle:
                 "/api/v1/users",
                 headers={"Authorization": f"Bearer {key_data['token']}"},
             )
-            assert response.status_code == 200, f"Key {key_data['obj'].name} should still work"
+            assert response.status_code == 200, (
+                f"Key {key_data['obj'].name} should still work"
+            )
 
 
 # =============================================================================
 # Cross-Resource Lifecycle Tests
 # =============================================================================
+
 
 class TestCrossResourceLifecycle:
     """Test interactions between users, workspaces, and API keys."""
@@ -709,6 +773,7 @@ class TestCrossResourceLifecycle:
 # Authentication Method Interoperability
 # =============================================================================
 
+
 class TestAuthInteroperability:
     """Test that different authentication methods work correctly together."""
 
@@ -728,7 +793,9 @@ class TestAuthInteroperability:
         test_db.refresh(user)
 
         # Create API key
-        key_obj, raw_token = services.create_api_key(test_db, user, name="Dual Auth Key")
+        key_obj, raw_token = services.create_api_key(
+            test_db, user, name="Dual Auth Key"
+        )
 
         # Test API key auth
         response = client.get(
@@ -765,9 +832,7 @@ class TestAuthInteroperability:
         test_db.refresh(user2)
 
         # Create JWT for user1
-        jwt_token = auth.create_access_token(
-            str(user1.id), user1.username, user1.role
-        )
+        jwt_token = auth.create_access_token(str(user1.id), user1.username, user1.role)
 
         # Create API key for user2
         key_obj, api_token = services.create_api_key(test_db, user2, name="User2 Key")
@@ -795,10 +860,13 @@ class TestAuthInteroperability:
 # Rate Limiting Tests
 # =============================================================================
 
+
 class TestRateLimiting:
     """Test rate limiting on auth and API endpoints."""
 
-    def test_auth_endpoint_rate_limiting(self, client: TestClient, test_db: Session) -> None:
+    def test_auth_endpoint_rate_limiting(
+        self, client: TestClient, test_db: Session
+    ) -> None:
         """Test that auth endpoints are rate limited (60 req/min)."""
         # Create a user for testing
         user = User(
@@ -816,10 +884,15 @@ class TestRateLimiting:
         ratelimited = False
 
         # Try multiple login attempts quickly
-        for i in range(65):
+        csrf_token = fetch_csrf_token(client, "/login")
+        for i in range(30):
             response = client.post(
                 "/login",
-                data={"username": "ratelimituser", "password": "wrongpass", "csrf_token": ""},
+                data={
+                    "username": "ratelimituser",
+                    "password": "wrongpass",
+                    "csrf_token": csrf_token,
+                },
             )
             login_attempts += 1
             if response.status_code == 429:
@@ -828,9 +901,13 @@ class TestRateLimiting:
 
         # Should have been rate limited
         assert ratelimited, "Expected to be rate limited after many login attempts"
-        assert login_attempts > 60, "Should have made more than 60 attempts before rate limit"
+        assert 5 <= login_attempts <= 30, (
+            "Rate limit should trigger after a handful of attempts"
+        )
 
-    def test_api_endpoint_rate_limiting(self, client: TestClient, test_db: Session) -> None:
+    def test_api_endpoint_rate_limiting(
+        self, client: TestClient, test_db: Session
+    ) -> None:
         """Test that API endpoints are rate limited (200 req/min)."""
         # Create a user with API key
         user = User(
@@ -844,7 +921,9 @@ class TestRateLimiting:
         test_db.refresh(user)
 
         # Create API key for auth
-        key_obj, raw_token = services.create_api_key(test_db, user, name="Rate Limit Key")
+        key_obj, raw_token = services.create_api_key(
+            test_db, user, name="Rate Limit Key"
+        )
 
         # Make requests to API endpoint
         # Rate limit is 200 per minute for general API
@@ -877,7 +956,9 @@ class TestRateLimiting:
         # This test verifies the rate limiting mechanism exists
         # If rate limiting is properly configured, we should see 429 responses
 
-    def test_rate_limit_response_format(self, client: TestClient, test_db: Session) -> None:
+    def test_rate_limit_response_format(
+        self, client: TestClient, test_db: Session
+    ) -> None:
         """Test that rate limit responses include proper headers."""
         # Create a user
         user = User(
@@ -890,19 +971,35 @@ class TestRateLimiting:
         test_db.commit()
 
         # Make many requests to trigger rate limit
+        csrf_token = fetch_csrf_token(client, "/login")
         for i in range(70):
             response = client.post(
                 "/login",
-                data={"username": "ratelimitfmtuser", "password": "wrongpass", "csrf_token": ""},
+                data={
+                    "username": "ratelimitfmtuser",
+                    "password": "wrongpass",
+                    "csrf_token": csrf_token,
+                },
             )
             if response.status_code == 429:
                 # Verify rate limit response format
-                assert "error" in response.json() or "detail" in response.json()
-                # Should have retry-after header
-                assert "retry-after" in str(response.headers).lower() or True  # May not be present
+                content_type = response.headers.get("content-type", "").lower()
+                if content_type.startswith("application/json"):
+                    payload = response.json()
+                    assert "error" in payload or "detail" in payload
+                else:
+                    assert response.text.strip(), "Expected non-empty rate limit body"
+                headers_lower = {k.lower(): v for k, v in response.headers.items()}
+                assert (
+                    "retry-after" in headers_lower
+                    or "x-ratelimit-reset" in headers_lower
+                    or "x-ratelimit-reset-after" in headers_lower
+                ), "Expected retry-related header in 429 response"
                 break
 
-    def test_rate_limit_reset_after_window(self, client: TestClient, test_db: Session) -> None:
+    def test_rate_limit_reset_after_window(
+        self, client: TestClient, test_db: Session
+    ) -> None:
         """Test that rate limits reset after the time window."""
         # This test verifies that after the rate limit window expires,
         # requests are allowed again. In practice, this would require
@@ -929,7 +1026,9 @@ class TestRateLimiting:
         # 3. Test indirectly by verifying rate limit state
         assert True, "Rate limit reset behavior documented"
 
-    def test_different_endpoints_separate_limits(self, client: TestClient, test_db: Session) -> None:
+    def test_different_endpoints_separate_limits(
+        self, client: TestClient, test_db: Session
+    ) -> None:
         """Test that auth and API endpoints have separate rate limits."""
         # Create a user
         user = User(
@@ -945,10 +1044,15 @@ class TestRateLimiting:
 
         # Exhaust auth endpoint rate limit
         auth_ratelimited = False
+        csrf_token = fetch_csrf_token(client, "/login")
         for i in range(70):
             response = client.post(
                 "/login",
-                data={"username": "separateuser", "password": "wrongpass", "csrf_token": ""},
+                data={
+                    "username": "separateuser",
+                    "password": "wrongpass",
+                    "csrf_token": csrf_token,
+                },
             )
             if response.status_code == 429:
                 auth_ratelimited = True
@@ -963,4 +1067,7 @@ class TestRateLimiting:
             )
             # Health endpoint should still be accessible
             # (rate limiting is separate for auth vs API endpoints)
-            assert response.status_code in [200, 429]  # May or may not be rate limited depending on config
+            assert response.status_code in [
+                200,
+                429,
+            ]  # May or may not be rate limited depending on config

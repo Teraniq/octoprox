@@ -12,7 +12,7 @@ from passlib.context import CryptContext
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .db import SessionLocal
+from .db import get_db
 from .models import ApiKey, User
 from .settings import settings
 
@@ -157,18 +157,10 @@ def verify_api_key(db: Session, api_key: str) -> ApiKey | None:
     return db_api_key
 
 
-def get_db() -> Session:
-    """Get a database session."""
-    db = SessionLocal()
-    try:
-        return db
-    finally:
-        db.close()
-
-
 async def get_current_user_unified(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
+    db: Session = Depends(get_db),
 ) -> User:
     """Unified authentication handler supporting session, API key, and JWT.
 
@@ -187,32 +179,9 @@ async def get_current_user_unified(
     Raises:
         HTTPException: If authentication fails (401)
     """
-    # First, check session-based auth
-    session_user = request.session.get("user")
-    if session_user:
-        db = get_db()
-        try:
-            stmt = select(User).where(
-                User.username == session_user.get("username"),
-                User.status == "active",
-            )
-            user = db.execute(stmt).scalar_one_or_none()
-            if user:
-                return user
-        finally:
-            db.close()
-
-    # If no session and no credentials, unauthorized
-    if not credentials:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not authenticated",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    token = credentials.credentials
-    db = get_db()
-    try:
+    # If bearer credentials are present, validate them first.
+    if credentials and credentials.credentials:
+        token = credentials.credentials
         # Check if it's an API key (mcp_* prefix)
         if token.startswith("mcp_"):
             api_key = verify_api_key(db, token)
@@ -240,7 +209,7 @@ async def get_current_user_unified(
                 User.id == int(sub),
                 User.status == "active",
             )
-            user = db.execute(stmt).scalar_one_or_none()
+            user = db.execute(stmt).scalars().first()
             if user:
                 return user
             raise HTTPException(
@@ -256,8 +225,32 @@ async def get_current_user_unified(
                 detail="Invalid authentication credentials",
                 headers={"WWW-Authenticate": "Bearer"},
             ) from exc
-    finally:
-        db.close()
+
+    # Fall back to session-based auth for web UI.
+    session_user = request.session.get("user")
+    if session_user:
+        stmt = select(User).where(
+            User.username == session_user.get("username"),
+            User.status == "active",
+        )
+        user = db.execute(stmt).scalars().first()
+        if user:
+            return user
+
+    # If no valid session and no bearer credentials, unauthorized.
+    if not credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # If bearer creds were provided but invalid, the branch above has already raised.
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Not authenticated",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
 
 
 async def require_admin(

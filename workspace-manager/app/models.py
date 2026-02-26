@@ -79,8 +79,11 @@ class Workspace(Base):
         default=datetime.now(timezone.utc),
         onupdate=datetime.now(timezone.utc),
     )
-    metadata: Mapped[dict | None] = mapped_column(
-        JSON, nullable=True, server_default="{}"
+    metadata_json: Mapped[dict | None] = mapped_column(
+        "metadata",
+        JSON,
+        nullable=True,
+        server_default="{}",
     )
     nexusgate_service_id: Mapped[str | None] = mapped_column(
         String(64), index=True, nullable=True

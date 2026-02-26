@@ -1,0 +1,55 @@
+# Workspace manager dockerignore
+# Secrets & environment files
+.env*
+!.env.example
+!.env.sample
+
+# Git artifacts
+.git/
+.git*
+!.gitignore
+!.gitattributes
+
+# Editor & IDE state
+.vscode/
+.idea/
+*.swp
+*.swo
+*.swn
+
+# Python artifacts & virtual environments
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.python-version
+venv/
+.venv/
+env/
+ENV/
+.envrc
+pip-wheel-metadata/
+pip-delete-this-directory.txt
+
+# Coverage & reports
+.coverage
+coverage.xml
+htmlcov/
+reports/
+
+# Logs and temporary data
+*.log
+logs/
+tmp/
+temp/
+
+# Documentation plans
+docs/plans/
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Tests (not needed in service image)
+tests/
