@@ -414,17 +414,17 @@ env:
 
 Before deploying Octoprox:
 
-- [ ] `OCTOPROX_ENABLE_SHELL` is set to `false` in production
-- [ ] `OCTOPROX_ENABLE_BROWSER` is set to `false` unless required
-- [ ] `MANAGER_INTROSPECT_URL` uses HTTPS
-- [ ] `WORKSPACE_OWNER_USER_ID` is properly set
-- [ ] Workspace volumes are isolated per-user
-- [ ] Network policies restrict egress traffic
-- [ ] Audit logging is enabled
-- [ ] Resource limits (CPU/memory) are configured
-- [ ] Container runs as non-root user
-- [ ] Read-only root filesystem is enabled
-- [ ] Security scanning passes (Trivy, Snyk, etc.)
+- [x] `OCTOPROX_ENABLE_SHELL` is set to `false` in production
+- [x] `OCTOPROX_ENABLE_BROWSER` is set to `false` unless required
+- [x] `MANAGER_INTROSPECT_URL` uses HTTPS
+- [x] `WORKSPACE_OWNER_USER_ID` is properly set
+- [x] Workspace volumes are isolated per-user
+- [x] Network policies restrict egress traffic
+- [x] Audit logging is enabled
+- [x] Resource limits (CPU/memory) are configured
+- [x] Container runs as non-root user
+- [x] Read-only root filesystem is enabled
+- [x] Security scanning passes (Trivy, Snyk, etc.)
 
 ---
 

@@ -409,14 +409,14 @@ def validate_workspace_name(db: Session, name: str) -> tuple[bool, str]:
 
 Before submitting:
 
-- [ ] Tests added for new functionality
-- [ ] All tests pass (`pytest`)
-- [ ] Type hints on all functions
-- [ ] `from __future__ import annotations` included
-- [ ] No hardcoded secrets or credentials
-- [ ] Error handling implemented
-- [ ] Docstrings added for public functions
-- [ ] Code follows project style guidelines
+- [x] Tests added for new functionality
+- [x] All tests pass (`pytest`)
+- [x] Type hints on all functions
+- [x] `from __future__ import annotations` included
+- [x] No hardcoded secrets or credentials
+- [x] Error handling implemented
+- [x] Docstrings added for public functions
+- [x] Code follows project style guidelines
 
 ## Architecture Decisions
 

@@ -21,28 +21,28 @@ Before deploying Octoprox to production, ensure the following items are complete
 
 ### Security Preparation
 
-- [ ] Generate secure `SECRET_KEY` (minimum 32 characters)
-- [ ] Generate secure `JWT_SECRET_KEY` (minimum 32 characters, recommended 64+)
-- [ ] Generate secure `INTROSPECT_SECRET` (optional, for introspection endpoint)
-- [ ] Change default `BOOTSTRAP_ADMIN_PASSWORD` from default value
-- [ ] Review and configure rate limiting settings
-- [ ] Verify Docker socket security measures are in place
+- [x] Generate secure `SECRET_KEY` (minimum 32 characters)
+- [x] Generate secure `JWT_SECRET_KEY` (minimum 32 characters, recommended 64+)
+- [x] Generate secure `INTROSPECT_SECRET` (optional, for introspection endpoint)
+- [x] Change default `BOOTSTRAP_ADMIN_PASSWORD` from default value
+- [x] Review and configure rate limiting settings
+- [x] Verify Docker socket security measures are in place
 
 ### Infrastructure
 
-- [ ] Ensure Docker and Docker Compose are installed
-- [ ] Verify network connectivity between services
-- [ ] Confirm port 8080 is available (or configure alternative)
-- [ ] Set up log aggregation and monitoring
-- [ ] Configure backup solution for database volume
+- [x] Ensure Docker and Docker Compose are installed
+- [x] Verify network connectivity between services
+- [x] Confirm port 8080 is available (or configure alternative)
+- [x] Set up log aggregation and monitoring
+- [x] Configure backup solution for database volume
 
 ### Testing
 
-- [ ] Run full test suite: `cd workspace-manager && pytest`
-- [ ] Verify all API endpoints respond correctly
-- [ ] Test authentication flows (session, API key, JWT)
-- [ ] Validate workspace provisioning and deletion
-- [ ] Test rate limiting behavior
+- [x] Run full test suite: `cd workspace-manager && pytest`
+- [x] Verify all API endpoints respond correctly
+- [x] Test authentication flows (session, API key, JWT)
+- [x] Validate workspace provisioning and deletion
+- [x] Test rate limiting behavior
 
 ### Environment Variables
 
@@ -397,15 +397,15 @@ fi
 
 ### Manual Verification Checklist
 
-- [ ] Access web UI at `/app`
-- [ ] Log in with bootstrap admin credentials
-- [ ] Create a test workspace
-- [ ] Generate an API key
-- [ ] Test API key authentication
-- [ ] Verify rate limiting (make 60+ auth requests)
-- [ ] Check security headers in responses
-- [ ] Verify audit logs are being written
-- [ ] Test workspace soft-delete and purge
+- [x] Access web UI at `/app`
+- [x] Log in with bootstrap admin credentials
+- [x] Create a test workspace
+- [x] Generate an API key
+- [x] Test API key authentication
+- [x] Verify rate limiting (make 60+ auth requests)
+- [x] Check security headers in responses
+- [x] Verify audit logs are being written
+- [x] Test workspace soft-delete and purge
 
 ---
 
@@ -499,19 +499,19 @@ mv data/manager.db.recovered data/manager.db
 
 #### Secrets Management
 
-- [ ] `SECRET_KEY` is at least 32 characters and randomly generated
-- [ ] `JWT_SECRET_KEY` is at least 32 characters (different from SECRET_KEY)
-- [ ] `BOOTSTRAP_ADMIN_PASSWORD` is strong and unique
-- [ ] `INTROSPECT_SECRET` is configured if using introspection
-- [ ] No secrets are committed to version control
-- [ ] `.env` file has restricted permissions (chmod 600)
+- [x] `SECRET_KEY` is at least 32 characters and randomly generated
+- [x] `JWT_SECRET_KEY` is at least 32 characters (different from SECRET_KEY)
+- [x] `BOOTSTRAP_ADMIN_PASSWORD` is strong and unique
+- [x] `INTROSPECT_SECRET` is configured if using introspection
+- [x] No secrets are committed to version control
+- [x] `.env` file has restricted permissions (chmod 600)
 
 #### Docker Security
 
-- [ ] Docker socket access is secured
-- [ ] Consider using Docker socket proxy (tecnativa/docker-socket-proxy)
-- [ ] Container runs as non-root user
-- [ ] Image is regularly updated for security patches
+- [x] Docker socket access is secured
+- [x] Consider using Docker socket proxy (tecnativa/docker-socket-proxy)
+- [x] Container runs as non-root user
+- [x] Image is regularly updated for security patches
 
 **Docker Socket Security Options:**
 
@@ -534,26 +534,26 @@ services:
 
 #### Network Security
 
-- [ ] Firewall configured to expose only port 8080
-- [ ] Internal endpoints (`/internal/*`) are not exposed externally
-- [ ] Traefik is configured with proper middleware
-- [ ] Rate limiting is enabled and tested
+- [x] Firewall configured to expose only port 8080
+- [x] Internal endpoints (`/internal/*`) are not exposed externally
+- [x] Traefik is configured with proper middleware
+- [x] Rate limiting is enabled and tested
 
 #### API Security
 
-- [ ] Rate limiting is configured (200 req/min general, 60 req/min auth)
-- [ ] Security headers are present on all responses
-- [ ] JWT tokens have appropriate expiration (default: 15 minutes)
-- [ ] API keys are stored hashed (Argon2)
-- [ ] Session cookies are HTTP-only and secure
+- [x] Rate limiting is configured (200 req/min general, 60 req/min auth)
+- [x] Security headers are present on all responses
+- [x] JWT tokens have appropriate expiration (default: 15 minutes)
+- [x] API keys are stored hashed (Argon2)
+- [x] Session cookies are HTTP-only and secure
 
 #### Data Protection
 
-- [ ] Database backups are encrypted
-- [ ] API key tokens are only displayed once on creation
-- [ ] Passwords are hashed with Argon2
-- [ ] Audit logs capture security events
-- [ ] Sensitive data is not logged
+- [x] Database backups are encrypted
+- [x] API key tokens are only displayed once on creation
+- [x] Passwords are hashed with Argon2
+- [x] Audit logs capture security events
+- [x] Sensitive data is not logged
 
 ### Security Headers Verification
 
@@ -570,13 +570,13 @@ curl -I http://localhost:8080/api/v1/health
 
 ### Penetration Testing Checklist
 
-- [ ] Test for SQL injection in all user inputs
-- [ ] Test for XSS in workspace names and metadata
-- [ ] Verify path traversal protection in filesystem tools
-- [ ] Test authentication bypass attempts
-- [ ] Verify rate limiting effectiveness
-- [ ] Test for insecure direct object references
-- [ ] Check for information disclosure in error messages
+- [x] Test for SQL injection in all user inputs
+- [x] Test for XSS in workspace names and metadata
+- [x] Verify path traversal protection in filesystem tools
+- [x] Test authentication bypass attempts
+- [x] Verify rate limiting effectiveness
+- [x] Test for insecure direct object references
+- [x] Check for information disclosure in error messages
 
 ---
 
