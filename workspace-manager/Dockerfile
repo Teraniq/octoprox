@@ -20,6 +20,7 @@ ENV PYTHONUNBUFFERED=1
 
 COPY --from=builder /usr/local /usr/local
 COPY --from=builder /app/app /app/app
+COPY healthcheck.py /app/healthcheck.py
 
 RUN groupadd --gid 1000 appgroup \
     && useradd --uid 1000 --gid appgroup --home-dir /app --create-home --shell /bin/bash appuser \
@@ -29,19 +30,7 @@ RUN groupadd --gid 1000 appgroup \
 
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-  CMD python - <<'PY'
-import http.client
-import sys
-
-try:
-    conn = http.client.HTTPConnection("localhost", 8000, timeout=5)
-    conn.request("GET", "/health")
-    resp = conn.getresponse()
-except Exception:
-    sys.exit(1)
-
-sys.exit(0 if resp.status == 200 else 1)
-PY
+  CMD ["python", "/app/healthcheck.py"]
 
 USER appuser
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4", "--proxy-headers", "--no-server-header", "--limit-concurrency", "100"]

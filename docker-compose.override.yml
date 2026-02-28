@@ -1,0 +1,4 @@
+services:
+  workspace-manager:
+    ports:
+      - "8002:8000"

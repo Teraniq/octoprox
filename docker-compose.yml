@@ -2,11 +2,13 @@ version: "3.8"
 
 services:
   traefik:
-    image: traefik:v3.1
+    image: traefik:v3.6.9
     command:
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
       - "--entrypoints.web.address=:8080"
+    environment:
+      - DOCKER_API_VERSION=1.53
     ports:
       - "8080:8080"
     volumes:
