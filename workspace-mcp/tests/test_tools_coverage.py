@@ -10,7 +10,7 @@ import sys
 import tempfile
 import types
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import httpx
@@ -73,19 +73,19 @@ if "mcp" not in sys.modules:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             pass
 
-    provider_module.AccessToken = AccessToken
-    provider_module.TokenVerifier = TokenVerifier
-    settings_module.AuthSettings = AuthSettings
-    fastmcp_module.FastMCP = FastMCP
-    types_module.Tool = Tool
-    auth_context_module.get_access_token = lambda: None
-    middleware_module.auth_context = auth_context_module
-    auth_module.middleware = middleware_module
-    server_module.auth = auth_module
-    auth_module.provider = provider_module
-    auth_module.settings = settings_module
-    mcp_module.server = server_module
-    server_module.fastmcp = fastmcp_module
+    setattr(provider_module, "AccessToken", AccessToken)
+    setattr(provider_module, "TokenVerifier", TokenVerifier)
+    setattr(settings_module, "AuthSettings", AuthSettings)
+    setattr(fastmcp_module, "FastMCP", FastMCP)
+    setattr(types_module, "Tool", Tool)
+    setattr(auth_context_module, "get_access_token", lambda: None)
+    setattr(middleware_module, "auth_context", auth_context_module)
+    setattr(auth_module, "middleware", middleware_module)
+    setattr(server_module, "auth", auth_module)
+    setattr(auth_module, "provider", provider_module)
+    setattr(auth_module, "settings", settings_module)
+    setattr(mcp_module, "server", server_module)
+    setattr(server_module, "fastmcp", fastmcp_module)
     sys.modules["mcp"] = mcp_module
     sys.modules["mcp.server"] = server_module
     sys.modules["mcp.server.auth"] = auth_module
@@ -105,6 +105,7 @@ from octoprox.tools.gitlab import (
     _load_gitlab_spec,
     register_gitlab_tools,
 )
+from octoprox.tools import get_tool_catalog as runtime_tool_catalog
 
 
 class StubMCP:
@@ -118,6 +119,28 @@ class StubMCP:
         return decorator
 
 
+def test_tool_catalog_metadata() -> None:
+    catalog = runtime_tool_catalog()
+    assert catalog
+    by_id = {entry["tool_id"]: entry for entry in catalog}
+    assert "fs_read_text" in by_id
+    assert "git" in by_id
+    assert "gitlab_request" in by_id
+    assert "openapi_call" in by_id
+    for entry in catalog:
+        for field in (
+            "tool_id",
+            "provider",
+            "tool_class",
+            "operations",
+            "risk_class",
+            "required_claims",
+            "supports_readonly",
+            "evidence_kind",
+        ):
+            assert field in entry
+
+
 def test_filesystem_tools_workflow(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -127,26 +150,27 @@ def test_filesystem_tools_workflow(
         lambda path: (tmp_path / path).resolve(),
     )
     mcp = StubMCP()
-    register_filesystem_tools(mcp)
+    register_filesystem_tools(cast(Any, mcp))
+    tool_mcp = cast(Any, mcp)
 
-    assert mcp.fs_list("missing") == []
+    assert tool_mcp.fs_list("missing") == []
     with pytest.raises(FileNotFoundError):
-        mcp.fs_read_text("missing")
+        tool_mcp.fs_read_text("missing")
 
-    assert mcp.fs_write_text("dir/file.txt", "hello") == "ok"
+    assert tool_mcp.fs_write_text("dir/file.txt", "hello") == "ok"
     assert (tmp_path / "dir" / "file.txt").read_text() == "hello"
-    assert mcp.fs_list("dir") == ["file.txt"]
-    assert mcp.fs_read_text("dir/file.txt") == "hello"
-    assert mcp.fs_delete("dir/file.txt") == "ok"
+    assert tool_mcp.fs_list("dir") == ["file.txt"]
+    assert tool_mcp.fs_read_text("dir/file.txt") == "hello"
+    assert tool_mcp.fs_delete("dir/file.txt") == "ok"
 
     (tmp_path / "tree").mkdir()
     (tmp_path / "tree" / "inner").mkdir()
     (tmp_path / "tree" / "inner" / "value.txt").write_text("v")
     with pytest.raises(IsADirectoryError):
-        mcp.fs_delete("tree")
-    assert mcp.fs_delete("tree", recursive=True) == "ok"
+        tool_mcp.fs_delete("tree")
+    assert tool_mcp.fs_delete("tree", recursive=True) == "ok"
     assert not (tmp_path / "tree").exists()
-    assert mcp.fs_delete("also-missing") == "ok"
+    assert tool_mcp.fs_delete("also-missing") == "ok"
 
 
 def test_validate_git_args_variants() -> None:
@@ -171,16 +195,17 @@ def test_git_tool_runs_and_validates(
     monkeypatch.setattr("octoprox.tools.git._require_owner", lambda: None)
     monkeypatch.setattr("octoprox.tools.git.WORKSPACE_ROOT", tmp_path)
     mcp = StubMCP()
-    register_git_tools(mcp)
+    register_git_tools(cast(Any, mcp))
+    tool_mcp = cast(Any, mcp)
 
-    result = mcp.git(["status", "--short"], timeout_s=5)
+    result = tool_mcp.git(["status", "--short"], timeout_s=5)
     assert result["returncode"] == mock_subprocess["result"].returncode
     assert mock_subprocess["run"].called
 
     with pytest.raises(ValueError, match="timeout_s must"):
-        mcp.git(["status"], timeout_s=0)
+        tool_mcp.git(["status"], timeout_s=0)
     with pytest.raises(ValueError, match="No git command provided"):
-        mcp.git([], timeout_s=10)
+        tool_mcp.git([], timeout_s=10)
 
 
 def test_gitlab_headers_switch(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -257,7 +282,8 @@ def test_load_gitlab_spec_cache_and_fallback(monkeypatch: pytest.MonkeyPatch) ->
 def test_gitlab_request_variants(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("octoprox.tools.gitlab._require_owner", lambda: None)
     mcp = StubMCP()
-    register_gitlab_tools(mcp)
+    register_gitlab_tools(cast(Any, mcp))
+    tool_mcp = cast(Any, mcp)
 
     json_response = MagicMock()
     json_response.status_code = 200
@@ -267,7 +293,7 @@ def test_gitlab_request_variants(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "octoprox.tools.gitlab.httpx.request", lambda *args, **kwargs: json_response
     )
-    payload = mcp.gitlab_request(
+    payload = tool_mcp.gitlab_request(
         "https://gitlab.com/api/v4", "token", "projects", method="GET"
     )
     assert payload["json"] == {"ok": True}
@@ -280,7 +306,7 @@ def test_gitlab_request_variants(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "octoprox.tools.gitlab.httpx.request", lambda *args, **kwargs: binary_response
     )
-    payload = mcp.gitlab_request(
+    payload = tool_mcp.gitlab_request(
         "https://gitlab.com/api/v4",
         "token",
         "projects/bin",
@@ -301,16 +327,17 @@ def test_gitlab_openapi_tools(
         lambda spec_url, refresh=False: sample_openapi_spec,
     )
     mcp = StubMCP()
-    register_gitlab_tools(mcp)
+    register_gitlab_tools(cast(Any, mcp))
+    tool_mcp = cast(Any, mcp)
 
-    spec = mcp.gitlab_openapi_spec(spec_url="url", offset=0, max_bytes=1000)
+    spec = tool_mcp.gitlab_openapi_spec(spec_url="url", offset=0, max_bytes=1000)
     assert spec["status_code"] == 200
     assert "openapi" in spec["text"]
 
-    paths = mcp.gitlab_openapi_paths(
+    paths = tool_mcp.gitlab_openapi_paths(
         spec_url="url", filter_text="users", limit=5, offset=0
     )
     assert any(entry["path"] == "/users" for entry in paths["entries"])
 
-    operation = mcp.gitlab_openapi_operation("/pets", "GET", spec_url="url")
+    operation = tool_mcp.gitlab_openapi_operation("/pets", "GET", spec_url="url")
     assert operation["operationId"] == "listPets"

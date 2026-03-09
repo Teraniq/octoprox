@@ -1,43 +1,102 @@
 {% extends "base.html" %}
 {% block content %}
-<h2>API Keys</h2>
-{% if message %}
-<div class="message">{{ message }}</div>
-{% endif %}
-{% if token %}
-<div class="token-box">{{ token }}</div>
-{% endif %}
-<form method="post" action="/keys">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-  <button type="submit">Create API Key</button>
-</form>
-<table>
-  <thead>
-    <tr>
-      <th>Prefix</th>
-      {% if is_admin %}<th>User</th>{% endif %}
-      <th>Created</th>
-      <th>Actions</th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for key in keys %}
-    <tr>
-      <td>{{ key.key_prefix }}</td>
-      {% if is_admin %}<td>{{ key.user.username }}</td>{% endif %}
-      <td>{{ key.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
-      <td class="actions">
-        <form
-          method="post"
-          action="/keys/{{ key.id }}/delete"
-          onsubmit="return confirmDelete('Delete API key {{ key.key_prefix }}?')"
-        >
-          <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-          <button class="danger" type="submit">Delete</button>
-        </form>
-      </td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
+{% set own_keys = keys | selectattr('user.username', 'equalto', user.username) | list | length if user else 0 %}
+<div class="summary-grid">
+  <div class="summary-card">
+    <span class="summary-label">Total keys</span>
+    <strong>{{ keys | length }}</strong>
+    <p>Tokens issued through this manager.</p>
+  </div>
+  <div class="summary-card">
+    <span class="summary-label">Your keys</span>
+    <strong>{{ own_keys }}</strong>
+    <p>Keys you control today.</p>
+  </div>
+</div>
+<div class="status-row">
+  {% if message %}
+  <div class="message">{{ message }}</div>
+  {% endif %}
+  {% if token %}
+  <div class="token-box token-hero">{{ token }}</div>
+  {% endif %}
+</div>
+<div class="safety-banner safety-banner--revocation" role="status" aria-live="polite">
+  <strong>Instant revocations</strong>
+  <p>Revoking a key now triggers the confirmation overlay so you can double-check the prefix before the change takes effect.</p>
+</div>
+<div class="callout callout--confirmation" role="status" aria-live="polite">
+  <span class="callout-icon" aria-hidden="true">🔐</span>
+  <div>
+    <p class="callout-title">Revocations with rituals</p>
+    <p>Each delete button is wired to the overlay via `data-confirm` metadata, keeping the warning front and center while you type the prefix and verify the token.</p>
+    <p class="callout-hint">
+      Revocations feed `data-confirm-` metadata into the overlay, and the shared `data-testid` selectors
+      (`delete-workspace-modal`, `confirm-workspace-name`, `danger-confirm-button`) keep every warning on-page before the action ships.
+    </p>
+  </div>
+</div>
+<section class="panel form-panel" aria-label="Create API key">
+  <div class="section-head">
+    <div>
+      <p class="panel-badge">Issuer</p>
+      <h3>Create an API key</h3>
+    </div>
+    <p class="section-subtitle">The key is shown once; store it safely.</p>
+  </div>
+  <form method="post" action="/keys">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+    <div class="form-actions">
+      <button class="primary" type="submit">Create API Key</button>
+    </div>
+  </form>
+  <p class="section-foot">Issuing keys still shows the single-use token with the same commanding context.</p>
+</section>
+<section class="panel table-panel" aria-label="API key list">
+  <div class="section-head">
+    <div>
+      <p class="panel-badge panel-badge--ghost">Catalog</p>
+      <h3>Existing keys</h3>
+    </div>
+    <p class="section-subtitle">Revoking removes access immediately.</p>
+  </div>
+  <div class="table-wrapper">
+    <table>
+      <thead>
+        <tr>
+          <th>Prefix</th>
+          {% if is_admin %}<th>User</th>{% endif %}
+          <th>Created</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for key in keys %}
+        <tr>
+          <td>{{ key.key_prefix }}</td>
+          {% if is_admin %}<td>{{ key.user.username }}</td>{% endif %}
+          <td>{{ key.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+          <td class="actions">
+            <form
+              method="post"
+              action="/keys/{{ key.id }}/delete"
+              data-confirm-message="Revoke API key {{ key.key_prefix }}? The prefix is revoked instantly and cannot be reused."
+              data-confirm-match="{{ key.key_prefix }}"
+              data-confirm-title="Revoke API key"
+              data-confirm-tone="revocation"
+              data-confirm-action="Revoke key"
+              data-confirm-icon="🔐"
+              data-confirm-context="Every client tied to {{ key.key_prefix }} loses access—issue a fresh key if you still need access."
+            >
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+              <button class="danger" type="submit">Delete</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="section-foot">Deleting keys now flows through the inline overlay, so the consequences stay on screen before you revoke.</p>
+</section>
 {% endblock %}

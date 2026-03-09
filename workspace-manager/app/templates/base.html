@@ -4,33 +4,130 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Workspace MCP Hub</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600&family=Sora:wght@600;700&family=Space+Mono:wght@400;700&display=swap"
+      rel="stylesheet"
+    />
     <link rel="stylesheet" href="/static/style.css" />
     <script src="https://unpkg.com/htmx.org@1.9.12"></script>
   </head>
   <body>
-    <header>
-      <div>
-        <strong>Workspace MCP Hub</strong>
-        <a href="/workspaces">Workspaces</a>
-        <a href="/keys">API Keys</a>
-        {% if user and user.role == "admin" %}
-        <a href="/admin/users">Users</a>
+    <div class="ambient-layer" aria-hidden="true">
+      <span class="ambient-orb orb-one"></span>
+      <span class="ambient-orb orb-two"></span>
+      <span class="ambient-orb orb-three"></span>
+    </div>
+    <div class="page-shell">
+      <header class="site-header">
+        <div class="brand-row">
+          <div class="brand-heading">
+            <strong>Workspace MCP Hub</strong>
+            <p class="header-tagline">Guarded MCP workspaces with clarity and confidence.</p>
+          </div>
+          <nav aria-label="Primary" class="header-nav">
+            <a href="/workspaces">Workspaces</a>
+            <a href="/keys">API Keys</a>
+            {% if user and user.role == "admin" %}
+            <a href="/admin/users">Users</a>
+            {% endif %}
+          </nav>
+        </div>
+        {% if user %}
+        <div class="user-row">
+          <div class="user-bubble">
+            <span class="user-name">{{ user.username }}</span>
+            <span class="user-role">{{ user.role | capitalize }}</span>
+          </div>
+          <form action="/logout" method="post">
+            {% if csrf_token %}
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+            {% endif %}
+            <button class="secondary" type="submit">Logout</button>
+          </form>
+        </div>
         {% endif %}
+      </header>
+      <main class="hub-main">
+        <section class="hero-panel hero-panel--primary" aria-label="Manager overview">
+          <div>
+            <p class="hero-tag">Manager Console</p>
+            <h1>Command workspaces with clarity</h1>
+          </div>
+          <p class="hero-callout">
+            {% if user %}
+            {{ user.username }} keeps the MCP fleet in rhythm. Visit workspaces, keys, and users with a calm single page experience.
+            {% else %}
+            Sign in to orchestrate your MCP workspaces, issue keys, and tame user access without jarring dialogs.
+            {% endif %}
+          </p>
+          <p class="hero-note">
+            <span class="hero-note__icon" aria-hidden="true">🛡️</span>
+            <strong>Guardrail-first</strong>
+            Deletions, revokes, and deactivations open the embedded confirmation overlay so your workspace control never leaves the page.
+          </p>
+          <div class="hero-meta">
+            <span>Live provisioning</span>
+            <span>HTMX-powered</span>
+            <span>Audit-ready</span>
+          </div>
+        </section>
+        <section class="content-panel">
+          <div class="container">
+            {% block content %}{% endblock %}
+          </div>
+        </section>
+      </main>
+    </div>
+    <div
+      class="confirmation-overlay"
+      id="confirmation-modal"
+      aria-hidden="true"
+      data-testid="delete-workspace-modal"
+    >
+      <div
+        class="confirmation-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="confirmation-title"
+        aria-describedby="confirmation-context confirmation-message"
+        tabindex="-1"
+        data-confirm-panel
+      >
+        <div class="confirmation-hero">
+          <span class="confirmation-icon" aria-hidden="true" data-confirm-icon>⚠️</span>
+          <div class="confirmation-labels">
+            <p id="confirmation-title" class="confirmation-label">Are you sure?</p>
+            <p class="confirmation-context" id="confirmation-context" data-confirm-context>
+              Destructive actions stay on the page so you can read the consequences.
+            </p>
+          </div>
+        </div>
+        <p class="confirmation-message" id="confirmation-message" data-confirm-message aria-live="assertive"></p>
+        <div class="confirmation-input confirmation-input-wrapper is-hidden" data-confirm-input-wrapper>
+          <label for="confirmation-input" class="confirmation-input-label">Confirm workspace name</label>
+          <input
+            id="confirmation-input"
+            type="text"
+            autocomplete="off"
+            data-confirm-input
+            data-testid="confirm-workspace-name"
+          />
+          <p class="confirmation-helper">Type the workspace name exactly to proceed.</p>
+        </div>
+        <div class="confirmation-actions">
+          <button type="button" class="secondary" data-confirm-cancel>Cancel</button>
+          <button
+            type="button"
+            class="danger"
+            data-confirm-button
+            data-testid="danger-confirm-button"
+          >
+            Confirm
+          </button>
+        </div>
       </div>
-      {% if user %}
-      <div>
-        {{ user.username }} ({{ user.role }})
-        <form action="/logout" method="post" style="display:inline;">
-          {% if csrf_token %}
-          <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-          {% endif %}
-          <button class="secondary" type="submit">Logout</button>
-        </form>
-      </div>
-      {% endif %}
-    </header>
-    <div class="container">
-      {% block content %}{% endblock %}
     </div>
     <script>
       function copySnippet(button) {
@@ -41,16 +138,141 @@
           setTimeout(() => (button.textContent = "Copy mcp.json"), 2000);
         });
       }
-      function confirmDelete(message) {
-        return confirm(message);
-      }
-      function confirmWorkspaceDelete(name) {
-        if (!confirm(`Delete workspace ${name}?`)) {
-          return false;
-        }
-        const confirmation = prompt("Type the workspace name to confirm deletion:");
-        return confirmation === name;
-      }
+
+      document.addEventListener("DOMContentLoaded", () => {
+        const modal = document.getElementById("confirmation-modal");
+        if (!modal) return;
+        const titleEl = modal.querySelector("#confirmation-title");
+        const defaultTitle = titleEl ? titleEl.textContent : "Are you sure?";
+        const messageEl = modal.querySelector("[data-confirm-message]");
+        const inputWrapper = modal.querySelector("[data-confirm-input-wrapper]");
+        const inputField = modal.querySelector("[data-confirm-input]");
+        const confirmButton = modal.querySelector("[data-confirm-button]");
+        const cancelButton = modal.querySelector("[data-confirm-cancel]");
+        const confirmPanel = modal.querySelector("[data-confirm-panel]");
+        const contextEl = modal.querySelector("[data-confirm-context]");
+        const iconEl = modal.querySelector("[data-confirm-icon]");
+        let pendingForm = null;
+        let requiredMatch = "";
+        const toneClasses = [
+          "confirmation-panel--danger",
+          "confirmation-panel--warning",
+          "confirmation-panel--revocation"
+        ];
+        const defaultConfirmText = confirmButton?.textContent?.trim() || "Confirm";
+        const defaultContextText = contextEl?.textContent?.trim() || "Confirm this action to continue.";
+
+        const resetInput = () => {
+          if (!inputField) return;
+          inputField.value = "";
+          inputField.classList.remove("input-error");
+        };
+
+        const resetTone = () => {
+          toneClasses.forEach((cls) => confirmPanel?.classList.remove(cls));
+        };
+
+        const closeModal = () => {
+          modal.classList.remove("is-visible");
+          modal.setAttribute("aria-hidden", "true");
+          pendingForm = null;
+          requiredMatch = "";
+          resetInput();
+          if (contextEl) {
+            contextEl.textContent = defaultContextText;
+          }
+          if (iconEl) {
+            iconEl.textContent = "⚠️";
+          }
+          if (confirmButton) {
+            confirmButton.textContent = defaultConfirmText;
+          }
+          if (titleEl) {
+            titleEl.textContent = defaultTitle;
+          }
+          resetTone();
+        };
+
+        document.addEventListener("click", (event) => {
+          if (event.target === modal) {
+            closeModal();
+          }
+        });
+
+        document.addEventListener("keydown", (event) => {
+          if (event.key === "Escape" && modal.classList.contains("is-visible")) {
+            event.preventDefault();
+            closeModal();
+          }
+        });
+
+        cancelButton?.addEventListener("click", () => {
+          closeModal();
+        });
+
+        inputField?.addEventListener("input", () => {
+          inputField.classList.remove("input-error");
+        });
+
+        confirmButton?.addEventListener("click", () => {
+          if (!pendingForm) return;
+          if (requiredMatch && inputField.value.trim() !== requiredMatch) {
+            inputField.classList.add("input-error");
+            inputField.focus();
+            return;
+          }
+          pendingForm.dataset.confirmBypass = "true";
+          closeModal();
+          pendingForm.submit();
+        });
+
+        document.querySelectorAll("form[data-confirm-message]").forEach((form, index) => {
+          if (!form.id) {
+            form.id = `confirm-form-${index}`;
+          }
+          form.addEventListener("submit", (event) => {
+            if (form.dataset.confirmBypass === "true") {
+              form.dataset.confirmBypass = "false";
+              return;
+            }
+            event.preventDefault();
+            pendingForm = form;
+            requiredMatch = (form.dataset.confirmMatch || "").trim();
+            messageEl.textContent = form.dataset.confirmMessage || "Confirm this action to continue.";
+            if (titleEl) {
+              titleEl.textContent = form.dataset.confirmTitle || defaultTitle;
+            }
+            const tone = (form.dataset.confirmTone || "").trim();
+            const actionLabel = (form.dataset.confirmAction || "").trim();
+            const contextText = (form.dataset.confirmContext || "").trim() || defaultContextText;
+            const icon = (form.dataset.confirmIcon || "").trim() || "⚠️";
+            if (contextEl) {
+              contextEl.textContent = contextText;
+            }
+            if (iconEl) {
+              iconEl.textContent = icon;
+            }
+            resetTone();
+            if (tone && confirmPanel) {
+              confirmPanel.classList.add(`confirmation-panel--${tone}`);
+            }
+            if (confirmButton) {
+              confirmButton.textContent = actionLabel || defaultConfirmText;
+            }
+            if (requiredMatch) {
+              inputWrapper.classList.remove("is-hidden");
+              resetInput();
+              inputField.setAttribute("placeholder", `Type \"${requiredMatch}\" to confirm`);
+              setTimeout(() => inputField.focus(), 0);
+            } else {
+              inputWrapper.classList.add("is-hidden");
+              setTimeout(() => confirmButton?.focus(), 0);
+            }
+            modal.classList.add("is-visible");
+            modal.setAttribute("aria-hidden", "false");
+          });
+        });
+      });
     </script>
   </body>
 </html>

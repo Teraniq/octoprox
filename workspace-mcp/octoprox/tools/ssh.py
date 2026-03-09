@@ -1,4 +1,5 @@
 """SSH tools for key management."""
+
 from __future__ import annotations
 
 import os
@@ -8,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from ..auth import _require_owner
 from ..path_utils import WORKSPACE_ROOT
+from .catalog import catalog_tool
 
 if TYPE_CHECKING:
     from .. import OctoproxMCP
@@ -39,7 +41,16 @@ def _ensure_ssh_key() -> None:
 def register_ssh_tools(mcp: "OctoproxMCP") -> None:
     """Register SSH tools with the MCP server."""
 
-    @mcp.tool()
+    @catalog_tool(
+        mcp,
+        tool_id="ssh_public_key",
+        provider="octoprox",
+        tool_class="ssh",
+        operations=("read", "inspect"),
+        risk_class="low",
+        supports_readonly=True,
+        evidence_kind="ssh_public_key",
+    )
     def ssh_public_key() -> str:
         """Get the SSH public key for this workspace."""
         _require_owner()

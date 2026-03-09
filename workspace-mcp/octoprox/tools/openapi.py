@@ -1,4 +1,5 @@
 """OpenAPI-to-MCP Adapter tools for generic API integration."""
+
 from __future__ import annotations
 
 import json
@@ -10,6 +11,7 @@ import httpx
 import yaml
 
 from ..auth import _require_owner
+from .catalog import catalog_tool
 
 if TYPE_CHECKING:
     from .. import OctoproxMCP
@@ -18,6 +20,7 @@ if TYPE_CHECKING:
 @dataclass
 class LoadedAPI:
     """Represents a loaded OpenAPI specification."""
+
     spec: dict[str, Any]
     base_url: str
     auth_header: str | None
@@ -44,7 +47,9 @@ def _resolve_ref(spec: dict[str, Any], ref: str) -> dict[str, Any]:
         ValueError: If the reference cannot be resolved
     """
     if not ref.startswith("#/"):
-        raise ValueError(f"Invalid $ref format: {ref}. Only local references (#/...) are supported.")
+        raise ValueError(
+            f"Invalid $ref format: {ref}. Only local references (#/...) are supported."
+        )
 
     # Remove the leading "#/" and split by "/"
     parts = ref[2:].split("/")
@@ -53,13 +58,17 @@ def _resolve_ref(spec: dict[str, Any], ref: str) -> dict[str, Any]:
     current: Any = spec
     for part in parts:
         if not isinstance(current, dict):
-            raise ValueError(f"Cannot resolve $ref '{ref}': intermediate value is not an object")
+            raise ValueError(
+                f"Cannot resolve $ref '{ref}': intermediate value is not an object"
+            )
         if part not in current:
             raise ValueError(f"Cannot resolve $ref '{ref}': '{part}' not found")
         current = current[part]
 
     if not isinstance(current, dict):
-        raise ValueError(f"Cannot resolve $ref '{ref}': resolved value is not an object")
+        raise ValueError(
+            f"Cannot resolve $ref '{ref}': resolved value is not an object"
+        )
 
     return current
 
@@ -140,7 +149,15 @@ def _extract_base_url(spec: dict[str, Any]) -> str:
 def register_openapi_tools(mcp: "OctoproxMCP") -> None:
     """Register OpenAPI adapter tools with the MCP server."""
 
-    @mcp.tool(
+    @catalog_tool(
+        mcp,
+        tool_id="openapi_load",
+        provider="octoprox",
+        tool_class="openapi",
+        operations=("load", "discover"),
+        risk_class="medium",
+        supports_readonly=False,
+        evidence_kind="openapi_spec",
         description="Load an OpenAPI specification and register it for use.",
     )
     def openapi_load(
@@ -188,10 +205,17 @@ def register_openapi_tools(mcp: "OctoproxMCP") -> None:
                     try:
                         spec = json.loads(spec_content)
                     except json.JSONDecodeError as e:
-                        raise ValueError(f"Invalid spec_content: not valid YAML or JSON: {e}")
+                        raise ValueError(
+                            f"Invalid spec_content: not valid YAML or JSON: {e}"
+                        )
             else:
                 # Fetch from URL
-                response = httpx.get(spec_url, timeout=30)
+                fetch_spec_url = spec_url
+                if fetch_spec_url is None:
+                    raise ValueError(
+                        "spec_url is required when spec_content is not provided"
+                    )
+                response = httpx.get(fetch_spec_url, timeout=30)
                 response.raise_for_status()
                 content_type = response.headers.get("content-type", "")
                 if "json" in content_type:
@@ -215,6 +239,7 @@ def register_openapi_tools(mcp: "OctoproxMCP") -> None:
         if not base_url and spec_url:
             # Extract base from spec URL
             from urllib.parse import urlparse
+
             parsed = urlparse(spec_url)
             base_url = f"{parsed.scheme}://{parsed.netloc}"
 
@@ -238,7 +263,15 @@ def register_openapi_tools(mcp: "OctoproxMCP") -> None:
             "endpoint_count": endpoint_count,
         }
 
-    @mcp.tool(
+    @catalog_tool(
+        mcp,
+        tool_id="openapi_list_apis",
+        provider="octoprox",
+        tool_class="openapi",
+        operations=("list", "discover"),
+        risk_class="low",
+        supports_readonly=True,
+        evidence_kind="openapi_index",
         description="List all loaded OpenAPI APIs.",
     )
     def openapi_list_apis() -> dict[str, Any]:
@@ -257,16 +290,26 @@ def register_openapi_tools(mcp: "OctoproxMCP") -> None:
 
         apis = []
         for name, api in _loaded_apis.items():
-            apis.append({
-                "name": name,
-                "title": api.title,
-                "version": api.version,
-                "endpoint_count": _count_endpoints(api.spec),
-            })
+            apis.append(
+                {
+                    "name": name,
+                    "title": api.title,
+                    "version": api.version,
+                    "endpoint_count": _count_endpoints(api.spec),
+                }
+            )
 
         return {"apis": apis}
 
-    @mcp.tool(
+    @catalog_tool(
+        mcp,
+        tool_id="openapi_list_endpoints",
+        provider="octoprox",
+        tool_class="openapi",
+        operations=("list", "discover"),
+        risk_class="low",
+        supports_readonly=True,
+        evidence_kind="openapi_index",
         description="List endpoints from a loaded API with optional filtering.",
     )
     def openapi_list_endpoints(
@@ -311,7 +354,16 @@ def register_openapi_tools(mcp: "OctoproxMCP") -> None:
         if offset < 0:
             offset = 0
 
-        http_methods = {"get", "post", "put", "patch", "delete", "head", "options", "trace"}
+        http_methods = {
+            "get",
+            "post",
+            "put",
+            "patch",
+            "delete",
+            "head",
+            "options",
+            "trace",
+        }
         entries: list[dict[str, Any]] = []
         filter_lower = filter.lower() if filter else None
 
@@ -338,12 +390,14 @@ def register_openapi_tools(mcp: "OctoproxMCP") -> None:
                     if tag not in tags:
                         continue
 
-                entries.append({
-                    "path": path,
-                    "method": method.upper(),
-                    "summary": summary,
-                    "tags": tags,
-                })
+                entries.append(
+                    {
+                        "path": path,
+                        "method": method.upper(),
+                        "summary": summary,
+                        "tags": tags,
+                    }
+                )
 
         total = len(entries)
         sliced = entries[offset : offset + limit]
@@ -355,7 +409,15 @@ def register_openapi_tools(mcp: "OctoproxMCP") -> None:
             "entries": sliced,
         }
 
-    @mcp.tool(
+    @catalog_tool(
+        mcp,
+        tool_id="openapi_get_operation",
+        provider="octoprox",
+        tool_class="openapi",
+        operations=("inspect", "discover"),
+        risk_class="low",
+        supports_readonly=True,
+        evidence_kind="openapi_operation",
         description="Get detailed information about a specific API operation.",
     )
     def openapi_get_operation(
@@ -415,7 +477,15 @@ def register_openapi_tools(mcp: "OctoproxMCP") -> None:
             **resolved_operation,
         }
 
-    @mcp.tool(
+    @catalog_tool(
+        mcp,
+        tool_id="openapi_call",
+        provider="octoprox",
+        tool_class="openapi",
+        operations=("request", "read", "write"),
+        risk_class="high",
+        supports_readonly=False,
+        evidence_kind="http_exchange",
         description="Call an API operation with the loaded OpenAPI spec.",
     )
     def openapi_call(
@@ -467,6 +537,7 @@ def register_openapi_tools(mcp: "OctoproxMCP") -> None:
 
         # Check if there are remaining placeholders
         import re
+
         remaining = re.findall(r"\{([^}]+)\}", resolved_path)
         if remaining:
             raise ValueError(f"Missing path parameters: {remaining}")

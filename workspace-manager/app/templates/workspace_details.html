@@ -1,12 +1,28 @@
-<div class="row-details">
-  <h4>MCP endpoints</h4>
-  <p><strong>gitfs</strong></p>
-  <p>URL: {{ endpoint }}</p>
-  <button
-    type="button"
-    data-snippet='{{ snippet | tojson }}'
-    onclick="copySnippet(this)"
-  >
-    Copy mcp.json
-  </button>
+<div class="details-panel">
+  <div class="details-head">
+    <div>
+      <p class="panel-badge panel-badge--ghost">MCP</p>
+      <h4>MCP endpoints</h4>
+    </div>
+    <p class="section-subtitle">Copy the snippet into `mcp.json` to configure your tools.</p>
+  </div>
+  <div class="details-body">
+    <p><strong>gitfs</strong></p>
+    <p class="endpoint-line">URL: {{ endpoint }}</p>
+    <button
+      type="button"
+      class="copy-button"
+      data-snippet='{{ snippet | tojson }}'
+      onclick="copySnippet(this)"
+    >
+      Copy mcp.json
+    </button>
+  </div>
+  <p class="details-note">The snippet includes the Bearer header; keep it secret and refresh as needed.</p>
+  <p class="details-note details-note--highlight">Planning to delete this workspace? The inline confirmation overlay from the list keeps you in context while you verify before confirming.</p>
+  <p class="details-note details-note--accent">Use the inline overlay before deleting so you can confirm the workspace name and avoid accidental removals.</p>
+  <div class="details-callout">
+    <p class="details-callout-title">Destructive flows stay visible</p>
+    <p>The inline modal always links back to this list component so deleting a workspace pauses for you to read the warning, type the name, and feel confident before sending the request.</p>
+  </div>
 </div>

@@ -1,70 +1,128 @@
 {% extends "base.html" %}
 {% block content %}
-<h2>Workspaces</h2>
-{% if message %}
-<div class="message">{{ message }}</div>
-{% endif %}
-{% if token %}
-<div class="token-box">{{ token }}</div>
-{% endif %}
-<form method="post" action="/workspaces">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-  <label>Workspace name</label>
-  <input
-    type="text"
-    name="name"
-    hx-get="/workspaces/validate"
-    hx-target="#name-check"
-    hx-trigger="keyup changed delay:300ms"
-    required
-  />
-  <span id="name-check"></span>
-  <button type="submit">Create</button>
-</form>
-<table>
-  <thead>
-    <tr>
-      <th>Name</th>
-      <th>Status</th>
-      <th>Owner</th>
-      <th>Created</th>
-      <th>Actions</th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for ws in workspaces %}
-    <tr>
-      <td>
-        <button
-          class="secondary"
-          type="button"
-          hx-get="/workspaces/{{ ws.id }}/details"
-          hx-target="#details-{{ ws.id }}"
-          hx-swap="innerHTML"
-        >
-          {{ ws.name }}
-        </button>
-      </td>
-      <td><span class="badge">{{ ws.status }}</span></td>
-      <td>{{ ws.user.username }}</td>
-      <td>{{ ws.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
-      <td class="actions">
-        <form
-          method="post"
-          action="/workspaces/{{ ws.id }}/delete"
-          onsubmit="return confirmWorkspaceDelete('{{ ws.name }}')"
-        >
-          <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-          <button class="danger" type="submit">Delete</button>
-        </form>
-      </td>
-    </tr>
-    <tr>
-      <td colspan="5">
-        <div id="details-{{ ws.id }}"></div>
-      </td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
+{% set active_workspaces = workspaces | selectattr('status', 'equalto', 'active') | list | length %}
+<div class="summary-grid">
+  <div class="summary-card">
+    <span class="summary-label">Total</span>
+    <strong>{{ workspaces | length }}</strong>
+    <p>Workspaces registered with the manager.</p>
+  </div>
+  <div class="summary-card">
+    <span class="summary-label">Active</span>
+    <strong>{{ active_workspaces }}</strong>
+    <p>MCP containers currently running.</p>
+  </div>
+</div>
+<div class="status-row">
+  {% if message %}
+  <div class="message">{{ message }}</div>
+  {% endif %}
+  {% if token %}
+  <div class="token-box token-hero">{{ token }}</div>
+  {% endif %}
+</div>
+<div class="callout callout--confirmation" role="status" aria-live="polite">
+  <span class="callout-icon" aria-hidden="true">🛡️</span>
+  <div>
+    <p class="callout-title">Structured deletions only</p>
+    <p>The inline confirmation overlay now hosts every workspace deletion and pulses gently when it appears, keeping the warning onscreen while you type the workspace name, absorb the context, then confirm to keep active MCP containers safe.</p>
+    <p class="callout-hint">
+      Delete buttons feed `data-confirm-` metadata into the modal, and the `data-testid` triplet
+      (`delete-workspace-modal`, `confirm-workspace-name`, `danger-confirm-button`) keeps QA anchored to the inline warning.
+    </p>
+  </div>
+</div>
+<section class="panel form-panel" aria-label="Create workspace">
+  <div class="section-head">
+    <div>
+      <p class="panel-badge">Provision</p>
+      <h3>Create a new workspace</h3>
+    </div>
+    <p class="section-subtitle">Names accept letters, numbers, dots, underscores, and hyphens.</p>
+  </div>
+  <form method="post" action="/workspaces">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+    <div class="form-group">
+      <label>Workspace name</label>
+      <input
+        type="text"
+        name="name"
+        hx-get="/workspaces/validate"
+        hx-target="#name-check"
+        hx-trigger="keyup changed delay:300ms"
+        required
+      />
+      <span id="name-check"></span>
+    </div>
+    <p class="form-note">Names must match the validation rules enforced by the manager.</p>
+    <div class="form-actions">
+      <button class="primary" type="submit">Create</button>
+    </div>
+  </form>
+  <p class="section-foot">The confirmation modal now guides every workspace removal with clear instructions.</p>
+</section>
+<section class="panel table-panel" aria-label="Workspace list">
+  <div class="section-head">
+    <div>
+      <p class="panel-badge panel-badge--ghost">Registry</p>
+      <h3>Workspace list</h3>
+    </div>
+    <p class="section-subtitle">Click a workspace to reveal MCP endpoints.</p>
+  </div>
+  <div class="table-wrapper">
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Status</th>
+          <th>Owner</th>
+          <th>Created</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for ws in workspaces %}
+        <tr>
+          <td>
+            <button
+              class="link-button"
+              type="button"
+              hx-get="/workspaces/{{ ws.id }}/details"
+              hx-target="#details-{{ ws.id }}"
+              hx-swap="innerHTML"
+            >
+              {{ ws.name }}
+            </button>
+          </td>
+          <td><span class="badge">{{ ws.status }}</span></td>
+          <td>{{ ws.user.username }}</td>
+          <td>{{ ws.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+          <td class="actions">
+            <form
+              method="post"
+              action="/workspaces/{{ ws.id }}/delete"
+              data-confirm-message="Delete workspace {{ ws.name }}? This stops the container and cannot be undone."
+              data-confirm-match="{{ ws.name }}"
+              data-confirm-title="Delete workspace"
+              data-confirm-tone="danger"
+              data-confirm-action="Delete workspace"
+              data-confirm-context="{{ ws.name }} will be removed from the registry and its MCP container halted."
+              data-confirm-icon="🛡️"
+            >
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+              <button class="danger" type="submit">Delete</button>
+            </form>
+          </td>
+        </tr>
+        <tr>
+          <td colspan="5">
+            <div id="details-{{ ws.id }}" class="details-slot"></div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="section-foot">Clicking delete wires directly to the overlay so the typed confirmation stays on screen instead of triggering a browser prompt.</p>
+</section>
 {% endblock %}

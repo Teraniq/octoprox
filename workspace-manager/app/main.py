@@ -1,12 +1,17 @@
 from __future__ import annotations
+# pyright: reportReturnType=false, reportMissingTypeArgument=false, reportArgumentType=false
 
 import asyncio
+import json
 import logging
+import socket
 import re
 import secrets
 from datetime import datetime, timedelta, timezone
 import ipaddress
 from typing import Any
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 from uuid import UUID
 
 from fastapi import (
@@ -181,7 +186,12 @@ async def security_headers_middleware(request: Request, call_next):
         response.headers["Strict-Transport-Security"] = hsts_value
 
     # Content security policy (basic)
-    response.headers["Content-Security-Policy"] = "default-src 'self'"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' https://unpkg.com; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src 'self' https://fonts.gstatic.com data:;"
+    )
 
     # Referrer policy
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
@@ -1747,10 +1757,10 @@ async def delete_api_key_endpoint(
 
 @app.post("/api/v1/auth/introspect")
 async def introspect_endpoint(
-    payload: dict = Body(...),
+    payload: dict[str, Any] = Body(...),
     x_introspect_secret: str | None = Header(None, alias="X-Introspect-Secret"),
     db: Session = Depends(get_db),
-) -> dict:
+) -> dict[str, Any]:
     """Introspect an API token.
 
     - Validates optional introspect_secret if configured
@@ -1773,28 +1783,43 @@ async def introspect_endpoint(
     if token.startswith("mcp_"):
         result = services.introspect_token(db, token)
         if result.get("active"):
+            username = None
+            user_id = result.get("user_id")
+            if user_id:
+                user = db.execute(
+                    select(User).where(User.id == int(user_id))
+                ).scalar_one_or_none()
+                username = user.username if user else None
             return {
-                "active": True,
-                "sub": result.get("user_id"),
-                "username": db.execute(
-                    select(User).where(User.id == int(result.get("user_id", 0)))
-                )
-                .scalar_one_or_none()
-                .username
-                if result.get("user_id")
-                else None,
-                "role": result.get("role"),
+                **result,
+                "sub": user_id,
+                "username": username,
                 "token_type": "api_key",
             }
 
     # Try JWT introspection
     try:
         jwt_payload = auth.verify_access_token(token)
+        subject_id = jwt_payload.get("sub")
+        username = jwt_payload.get("username")
+        jwt_user = None
+        if subject_id:
+            try:
+                jwt_user = db.execute(
+                    select(User).where(User.id == int(subject_id))
+                ).scalar_one_or_none()
+            except (TypeError, ValueError):
+                jwt_user = None
+        result = services.build_active_introspection_response(
+            jwt_user,
+            role=jwt_payload.get("role"),
+            subject_id=subject_id,
+            subject_name=username,
+        )
         return {
-            "active": True,
-            "sub": jwt_payload.get("sub"),
-            "username": jwt_payload.get("username"),
-            "role": jwt_payload.get("role"),
+            **result,
+            "sub": subject_id,
+            "username": username,
             "token_type": "jwt",
             "exp": jwt_payload.get("exp"),
         }
@@ -1897,22 +1922,498 @@ async def health_endpoint(
 # MCP Bridge Endpoints
 # ----------------------------------------------------------------------------
 
-# Static list of available MCP tools
+MCP_BRIDGE_TIMEOUT_SECONDS = 20
+
 MCP_TOOLS = [
     {
-        "name": "list_repositories",
-        "description": "List available repositories in the workspace",
+        "tool_id": "fs_list",
+        "name": "fs_list",
+        "description": "List files and directories in the workspace.",
+        "provider": "octoprox",
+        "tool_class": "filesystem",
+        "operations": ["list", "inspect"],
+        "risk_class": "low",
+        "required_claims": ["workspace.owner_or_admin"],
+        "supports_readonly": True,
+        "evidence_kind": "filesystem_listing",
     },
-    {"name": "read_file", "description": "Read a file from the workspace"},
-    {"name": "write_file", "description": "Write a file to the workspace"},
-    {"name": "search_code", "description": "Search for code patterns in the workspace"},
     {
-        "name": "execute_command",
-        "description": "Execute a command in the workspace context",
+        "tool_id": "fs_read_text",
+        "name": "fs_read_text",
+        "description": "Read text content from a file.",
+        "provider": "octoprox",
+        "tool_class": "filesystem",
+        "operations": ["read", "inspect"],
+        "risk_class": "low",
+        "required_claims": ["workspace.owner_or_admin"],
+        "supports_readonly": True,
+        "evidence_kind": "filesystem_text",
     },
-    {"name": "git_status", "description": "Get git status for the workspace"},
-    {"name": "git_clone", "description": "Clone a git repository into the workspace"},
+    {
+        "tool_id": "fs_write_text",
+        "name": "fs_write_text",
+        "description": "Write text content to a file.",
+        "provider": "octoprox",
+        "tool_class": "filesystem",
+        "operations": ["write", "create", "update"],
+        "risk_class": "high",
+        "required_claims": ["workspace.owner_or_admin"],
+        "supports_readonly": False,
+        "evidence_kind": "filesystem_text",
+    },
+    {
+        "tool_id": "fs_delete",
+        "name": "fs_delete",
+        "description": "Delete a file or directory.",
+        "provider": "octoprox",
+        "tool_class": "filesystem",
+        "operations": ["delete", "remove"],
+        "risk_class": "high",
+        "required_claims": ["workspace.owner_or_admin"],
+        "supports_readonly": False,
+        "evidence_kind": "filesystem_mutation",
+    },
+    {
+        "tool_id": "git",
+        "name": "git",
+        "description": "Run allowlisted git commands inside the workspace.",
+        "provider": "octoprox",
+        "tool_class": "git",
+        "operations": ["status", "diff", "log", "clone", "commit", "push", "branch"],
+        "risk_class": "high",
+        "required_claims": ["workspace.owner_or_admin"],
+        "supports_readonly": False,
+        "evidence_kind": "git_command",
+    },
+    {
+        "tool_id": "gitlab_request",
+        "name": "gitlab_request",
+        "description": "Proxy an arbitrary GitLab REST API request.",
+        "provider": "octoprox",
+        "tool_class": "gitlab",
+        "operations": ["request", "read", "write"],
+        "risk_class": "high",
+        "required_claims": ["workspace.owner_or_admin"],
+        "supports_readonly": False,
+        "evidence_kind": "http_exchange",
+    },
+    {
+        "tool_id": "gitlab_openapi_spec",
+        "name": "gitlab_openapi_spec",
+        "description": "Fetch the GitLab OpenAPI spec as chunked YAML.",
+        "provider": "octoprox",
+        "tool_class": "gitlab",
+        "operations": ["discover", "inspect"],
+        "risk_class": "low",
+        "required_claims": ["workspace.owner_or_admin"],
+        "supports_readonly": True,
+        "evidence_kind": "openapi_spec",
+    },
+    {
+        "tool_id": "gitlab_openapi_paths",
+        "name": "gitlab_openapi_paths",
+        "description": "List GitLab OpenAPI paths and methods.",
+        "provider": "octoprox",
+        "tool_class": "gitlab",
+        "operations": ["discover", "list"],
+        "risk_class": "low",
+        "required_claims": ["workspace.owner_or_admin"],
+        "supports_readonly": True,
+        "evidence_kind": "openapi_index",
+    },
+    {
+        "tool_id": "gitlab_openapi_operation",
+        "name": "gitlab_openapi_operation",
+        "description": "Inspect a GitLab OpenAPI operation schema.",
+        "provider": "octoprox",
+        "tool_class": "gitlab",
+        "operations": ["discover", "inspect"],
+        "risk_class": "low",
+        "required_claims": ["workspace.owner_or_admin"],
+        "supports_readonly": True,
+        "evidence_kind": "openapi_operation",
+    },
+    {
+        "tool_id": "gitlab_tool_help",
+        "name": "gitlab_tool_help",
+        "description": "Return machine-readable GitLab tool guidance.",
+        "provider": "octoprox",
+        "tool_class": "gitlab",
+        "operations": ["help", "discover"],
+        "risk_class": "low",
+        "required_claims": ["workspace.owner_or_admin"],
+        "supports_readonly": True,
+        "evidence_kind": "help",
+    },
+    {
+        "tool_id": "ssh_public_key",
+        "name": "ssh_public_key",
+        "description": "Return the workspace SSH public key.",
+        "provider": "octoprox",
+        "tool_class": "ssh",
+        "operations": ["read", "inspect"],
+        "risk_class": "low",
+        "required_claims": ["workspace.owner_or_admin"],
+        "supports_readonly": True,
+        "evidence_kind": "ssh_public_key",
+    },
+    {
+        "tool_id": "openapi_load",
+        "name": "openapi_load",
+        "description": "Load an OpenAPI specification into the runtime registry.",
+        "provider": "octoprox",
+        "tool_class": "openapi",
+        "operations": ["load", "discover"],
+        "risk_class": "medium",
+        "required_claims": ["workspace.owner_or_admin"],
+        "supports_readonly": False,
+        "evidence_kind": "openapi_spec",
+    },
+    {
+        "tool_id": "openapi_list_apis",
+        "name": "openapi_list_apis",
+        "description": "List OpenAPI specifications loaded in the runtime.",
+        "provider": "octoprox",
+        "tool_class": "openapi",
+        "operations": ["list", "discover"],
+        "risk_class": "low",
+        "required_claims": ["workspace.owner_or_admin"],
+        "supports_readonly": True,
+        "evidence_kind": "openapi_index",
+    },
+    {
+        "tool_id": "openapi_list_endpoints",
+        "name": "openapi_list_endpoints",
+        "description": "List endpoints from a loaded OpenAPI specification.",
+        "provider": "octoprox",
+        "tool_class": "openapi",
+        "operations": ["list", "discover"],
+        "risk_class": "low",
+        "required_claims": ["workspace.owner_or_admin"],
+        "supports_readonly": True,
+        "evidence_kind": "openapi_index",
+    },
+    {
+        "tool_id": "openapi_get_operation",
+        "name": "openapi_get_operation",
+        "description": "Inspect a single OpenAPI operation.",
+        "provider": "octoprox",
+        "tool_class": "openapi",
+        "operations": ["inspect", "discover"],
+        "risk_class": "low",
+        "required_claims": ["workspace.owner_or_admin"],
+        "supports_readonly": True,
+        "evidence_kind": "openapi_operation",
+    },
+    {
+        "tool_id": "openapi_call",
+        "name": "openapi_call",
+        "description": "Execute an API call through a loaded OpenAPI definition.",
+        "provider": "octoprox",
+        "tool_class": "openapi",
+        "operations": ["request", "read", "write"],
+        "risk_class": "high",
+        "required_claims": ["workspace.owner_or_admin"],
+        "supports_readonly": False,
+        "evidence_kind": "http_exchange",
+    },
 ]
+
+MCP_TOOLS_BY_ID = {tool["tool_id"]: tool for tool in MCP_TOOLS}
+
+MCP_LEGACY_TOOL_ALIASES = {
+    "read_file": "fs_read_text",
+    "write_file": "fs_write_text",
+}
+
+MCP_RECOMMENDATION_KEYWORDS = {
+    "filesystem": {
+        "file",
+        "files",
+        "filesystem",
+        "path",
+        "directory",
+        "dir",
+        "read",
+        "write",
+        "delete",
+    },
+    "git": {
+        "git",
+        "repo",
+        "repository",
+        "branch",
+        "commit",
+        "clone",
+        "diff",
+        "status",
+        "push",
+    },
+    "gitlab": {
+        "gitlab",
+        "mr",
+        "merge",
+        "issue",
+        "issues",
+        "project",
+        "projects",
+        "pipeline",
+        "pipelines",
+        "api",
+    },
+    "openapi": {"openapi", "swagger", "schema", "endpoint", "endpoints", "spec"},
+    "ssh": {"ssh", "public", "key", "keys"},
+}
+
+
+def _workspace_mcp_endpoint(workspace: Workspace, suffix: str) -> str:
+    base = f"{settings.public_base_url}/ws/{workspace.name}/mcp/v1"
+    return f"{base}/{suffix.lstrip('/')}"
+
+
+def _resolve_mcp_bearer_token(request: Request, current_user: User) -> str:
+    authorization = request.headers.get("Authorization", "")
+    if authorization.startswith("Bearer "):
+        token = authorization.split(" ", 1)[1].strip()
+        if token:
+            return token
+    return auth.create_access_token(
+        str(current_user.id), current_user.username, current_user.role
+    )
+
+
+def _load_json_bytes(raw_payload: bytes) -> dict[str, Any]:
+    if not raw_payload:
+        return {}
+    try:
+        decoded = json.loads(raw_payload.decode("utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(decoded, dict):
+        raise ValueError("Expected a JSON object")
+    return decoded
+
+
+def _workspace_mcp_json_request(
+    method: str,
+    url: str,
+    token: str,
+    payload: dict[str, Any] | None = None,
+    timeout: int = MCP_BRIDGE_TIMEOUT_SECONDS,
+) -> tuple[int, dict[str, Any]]:
+    body = None
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    if payload is not None:
+        body = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+
+    request_obj = urllib_request.Request(url, data=body, headers=headers, method=method)
+    try:
+        with urllib_request.urlopen(request_obj, timeout=timeout) as response:
+            status_code = getattr(response, "status", response.getcode())
+            return status_code, _load_json_bytes(response.read())
+    except urllib_error.HTTPError as exc:
+        return exc.code, _load_json_bytes(exc.read())
+    except urllib_error.URLError as exc:
+        reason = exc.reason
+        if isinstance(reason, (TimeoutError, socket.timeout)):
+            raise TimeoutError("workspace MCP request timed out") from exc
+        raise ConnectionError("workspace MCP request failed") from exc
+
+
+def _normalized_tool_params(data: dict[str, Any]) -> dict[str, Any]:
+    parameters = data.get("parameters")
+    params = data.get("params")
+    normalized: dict[str, Any] = {}
+    if isinstance(parameters, dict):
+        normalized.update(parameters)
+    if isinstance(params, dict):
+        normalized.update(params)
+    return normalized
+
+
+def _resolve_invocation_target(
+    tool: str, params: dict[str, Any]
+) -> tuple[str, dict[str, Any]]:
+    canonical_tool = MCP_LEGACY_TOOL_ALIASES.get(tool, tool)
+    if canonical_tool == "git_status":
+        return "git", {"args": ["status", "--short", "--branch"]}
+    return canonical_tool, params
+
+
+def _parsed_mcp_content_item(item: Any) -> Any:
+    if not isinstance(item, dict):
+        return item
+    if item.get("type") != "text":
+        return item
+    text_value = item.get("text")
+    if not isinstance(text_value, str):
+        return item
+    try:
+        return json.loads(text_value)
+    except json.JSONDecodeError:
+        return text_value
+
+
+def _extract_mcp_call_result(
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    error_payload = payload.get("error")
+    if isinstance(error_payload, dict):
+        return None, error_payload
+
+    result_payload = payload.get("result")
+    if not isinstance(result_payload, dict):
+        return {"raw": payload}, None
+
+    if "structuredContent" in result_payload:
+        return {"content": result_payload["structuredContent"]}, None
+
+    content = result_payload.get("content")
+    if not isinstance(content, list):
+        return result_payload, None
+
+    parsed_content = [_parsed_mcp_content_item(item) for item in content]
+    if len(parsed_content) == 1:
+        return {"content": parsed_content[0]}, None
+    return {"content": parsed_content}, None
+
+
+def _failure_payload(
+    *,
+    tool: str,
+    workspace_id: int,
+    endpoint: str,
+    status_value: str,
+    message: str,
+    error_code: str,
+    params: dict[str, Any],
+    details: dict[str, Any] | None = None,
+    denial: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload = {
+        "tool": tool,
+        "workspace_id": workspace_id,
+        "status": status_value,
+        "message": message,
+        "endpoint": endpoint,
+        "params_received": params,
+        "error": {"code": error_code, "details": details or {}},
+    }
+    if denial is not None:
+        payload["denial"] = denial
+    return payload
+
+
+def _tool_request_denial(
+    *,
+    message: str,
+    reason: str,
+    requested_intent: str,
+    workspace_id: int | None,
+    candidates: list[dict[str, Any]],
+    allowed_providers: list[str],
+    allowed_tool_classes: list[str],
+) -> dict[str, Any]:
+    return {
+        "error_code": "tool_request_denied",
+        "message": message,
+        "reason": reason,
+        "requested_intent": requested_intent,
+        "workspace_id": workspace_id,
+        "candidate_count": len(candidates),
+        "allowed_tool_ids": [candidate["tool_id"] for candidate in candidates],
+        "allowed_providers": allowed_providers,
+        "allowed_tool_classes": allowed_tool_classes,
+        "tool_request": {
+            "issue_type": "tool-request",
+            "provider": "octoprox",
+            "requested_intent": requested_intent,
+            "workspace_id": workspace_id,
+        },
+    }
+
+
+def _recommended_tools(
+    payload: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[str], list[str]]:
+    requested_tool_class = str(payload.get("tool_class", "")).strip().lower()
+    requested_provider = str(payload.get("provider", "")).strip().lower()
+    requested_intent = str(payload.get("intent", "")).strip().lower()
+    readonly_only = bool(payload.get("readonly", False))
+    limit = int(payload.get("limit", 5) or 5)
+    allowed_tool_classes = [
+        str(value).strip().lower()
+        for value in payload.get("allowed_tool_classes", [])
+        if str(value).strip()
+    ]
+    allowed_providers = [
+        str(value).strip().lower()
+        for value in payload.get("allowed_providers", [])
+        if str(value).strip()
+    ]
+    denied_tool_ids = {
+        str(value).strip().lower()
+        for value in payload.get("denied_tool_ids", [])
+        if str(value).strip()
+    }
+    denied_tool_classes = {
+        str(value).strip().lower()
+        for value in payload.get("denied_tool_classes", [])
+        if str(value).strip()
+    }
+    tokens = {token for token in re.split(r"[^a-z0-9]+", requested_intent) if token}
+
+    scored: list[dict[str, Any]] = []
+    for tool in MCP_TOOLS:
+        tool_id = str(tool["tool_id"]).lower()
+        tool_class = str(tool["tool_class"]).lower()
+        provider = str(tool["provider"]).lower()
+        supports_readonly = bool(tool["supports_readonly"])
+        if denied_tool_ids and tool_id in denied_tool_ids:
+            continue
+        if denied_tool_classes and tool_class in denied_tool_classes:
+            continue
+        if allowed_tool_classes and tool_class not in allowed_tool_classes:
+            continue
+        if allowed_providers and provider not in allowed_providers:
+            continue
+        if requested_tool_class and tool_class != requested_tool_class:
+            continue
+        if requested_provider and provider != requested_provider:
+            continue
+        if readonly_only and not supports_readonly:
+            continue
+
+        score = 0
+        reasons: list[str] = []
+        keyword_matches = sorted(
+            tokens & MCP_RECOMMENDATION_KEYWORDS.get(tool_class, set())
+        )
+        if keyword_matches:
+            score += len(keyword_matches) * 10
+            reasons.append(f"matched {', '.join(keyword_matches)}")
+        if requested_tool_class:
+            score += 5
+            reasons.append(f"tool_class={tool_class}")
+        if requested_provider:
+            score += 3
+            reasons.append(f"provider={provider}")
+        if readonly_only and supports_readonly:
+            score += 2
+            reasons.append("readonly")
+        if not requested_intent and (
+            requested_tool_class or requested_provider or readonly_only
+        ):
+            score += 1
+
+        if score <= 0 and requested_intent:
+            continue
+
+        scored.append({**tool, "score": score, "reasons": reasons})
+
+    scored.sort(key=lambda item: (-item["score"], item["tool_id"]))
+    return scored[: max(limit, 1)], allowed_providers, allowed_tool_classes
 
 
 @app.get("/api/v1/mcp/tools")
@@ -1942,25 +2443,68 @@ async def list_mcp_tools(
                 status_code=status.HTTP_403_FORBIDDEN, detail="Access denied"
             )
 
-    return api_response({"tools": MCP_TOOLS})
+    return api_response({"tools": MCP_TOOLS, "count": len(MCP_TOOLS)})
 
 
-@app.post("/api/v1/mcp/invoke")
-async def invoke_mcp_tool(
+@app.post("/api/v1/mcp/tool-recommendations")
+async def recommend_mcp_tools(
     data: dict = Body(...),
     current_user: User = Depends(auth.get_current_user_unified),
     db: Session = Depends(get_db),
 ) -> dict:
-    """Invoke an MCP tool.
+    workspace_id = data.get("workspace_id")
+    if workspace_id is not None:
+        workspace = db.execute(
+            select(Workspace).where(Workspace.id == workspace_id)
+        ).scalar_one_or_none()
+        if not workspace:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found"
+            )
+        if current_user.role != "admin" and workspace.user_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="Access denied"
+            )
 
-    - Body: workspace_id (required), tool (required)
-    - Validates workspace exists
-    - Checks permissions (admin or owner)
-    - Returns placeholder result for now
-    """
+    recommendations, allowed_providers, allowed_tool_classes = _recommended_tools(data)
+    requested_intent = str(data.get("intent", "")).strip()
+    if not recommendations:
+        denial = _tool_request_denial(
+            message="No octoprox tool is both relevant and allowed for this request.",
+            reason="no_relevant_allowed_tool",
+            requested_intent=requested_intent,
+            workspace_id=workspace_id,
+            candidates=[],
+            allowed_providers=allowed_providers,
+            allowed_tool_classes=allowed_tool_classes,
+        )
+        return api_response(
+            {
+                "status": "denied",
+                "recommendations": [],
+                "denial": denial,
+            }
+        )
+
+    return api_response(
+        {
+            "status": "ok",
+            "recommendations": recommendations,
+            "selected_tool": recommendations[0]["tool_id"],
+        }
+    )
+
+
+@app.post("/api/v1/mcp/invoke", response_model=None)
+async def invoke_mcp_tool(
+    request: Request,
+    data: dict = Body(...),
+    current_user: User = Depends(auth.get_current_user_unified),
+    db: Session = Depends(get_db),
+) -> Any:
     workspace_id = data.get("workspace_id")
     tool = data.get("tool")
-    params = data.get("params", {})
+    params = _normalized_tool_params(data)
 
     if not workspace_id:
         raise HTTPException(
@@ -1988,20 +2532,121 @@ async def invoke_mcp_tool(
             status_code=status.HTTP_403_FORBIDDEN, detail="Access denied"
         )
 
-    # Validate tool exists
-    if tool not in [t["name"] for t in MCP_TOOLS]:
+    runtime_tool, runtime_params = _resolve_invocation_target(tool, params)
+    if runtime_tool not in MCP_TOOLS_BY_ID:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=f"Unknown tool: {tool}"
         )
 
-    # Placeholder implementation - actual implementation would route to workspace MCP
+    endpoint = _workspace_mcp_endpoint(workspace, "tools/call")
+    token = _resolve_mcp_bearer_token(request, current_user)
+    request_payload = {
+        "jsonrpc": "2.0",
+        "id": secrets.token_hex(8),
+        "method": "tools/call",
+        "params": {"name": runtime_tool, "arguments": runtime_params},
+    }
+
+    try:
+        status_code, runtime_response = _workspace_mcp_json_request(
+            "POST", endpoint, token, request_payload
+        )
+    except TimeoutError:
+        failure = _failure_payload(
+            tool=runtime_tool,
+            workspace_id=workspace_id,
+            endpoint=endpoint,
+            status_value="failed",
+            message="Workspace MCP timed out while executing the tool.",
+            error_code="workspace_mcp_timeout",
+            params=runtime_params,
+        )
+        return JSONResponse(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            content=api_response(failure),
+        )
+    except ConnectionError:
+        failure = _failure_payload(
+            tool=runtime_tool,
+            workspace_id=workspace_id,
+            endpoint=endpoint,
+            status_value="failed",
+            message="Workspace MCP could not be reached.",
+            error_code="workspace_mcp_unreachable",
+            params=runtime_params,
+        )
+        return JSONResponse(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            content=api_response(failure),
+        )
+
+    if status_code in {status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN}:
+        denial = _tool_request_denial(
+            message="Workspace MCP denied this tool invocation.",
+            reason="runtime_denied",
+            requested_intent=runtime_tool,
+            workspace_id=workspace_id,
+            candidates=[MCP_TOOLS_BY_ID[runtime_tool]],
+            allowed_providers=[MCP_TOOLS_BY_ID[runtime_tool]["provider"]],
+            allowed_tool_classes=[MCP_TOOLS_BY_ID[runtime_tool]["tool_class"]],
+        )
+        failure = _failure_payload(
+            tool=runtime_tool,
+            workspace_id=workspace_id,
+            endpoint=endpoint,
+            status_value="denied",
+            message="Workspace MCP denied this tool invocation.",
+            error_code="workspace_mcp_denied",
+            params=runtime_params,
+            details=runtime_response,
+            denial=denial,
+        )
+        return JSONResponse(
+            status_code=status.HTTP_403_FORBIDDEN,
+            content=api_response(failure),
+        )
+
+    if status_code >= status.HTTP_400_BAD_REQUEST:
+        failure = _failure_payload(
+            tool=runtime_tool,
+            workspace_id=workspace_id,
+            endpoint=endpoint,
+            status_value="failed",
+            message="Workspace MCP returned an error response.",
+            error_code="workspace_mcp_error",
+            params=runtime_params,
+            details=runtime_response,
+        )
+        return JSONResponse(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            content=api_response(failure),
+        )
+
+    parsed_result, runtime_error = _extract_mcp_call_result(runtime_response)
+    if runtime_error is not None:
+        failure = _failure_payload(
+            tool=runtime_tool,
+            workspace_id=workspace_id,
+            endpoint=endpoint,
+            status_value="failed",
+            message="Workspace MCP returned a JSON-RPC error.",
+            error_code="workspace_mcp_jsonrpc_error",
+            params=runtime_params,
+            details=runtime_error,
+        )
+        return JSONResponse(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            content=api_response(failure),
+        )
+
     result = {
-        "tool": tool,
+        "tool": runtime_tool,
         "workspace_id": workspace_id,
-        "status": "pending",
-        "message": "Tool invocation is handled by the workspace MCP server. Use the workspace endpoint directly.",
+        "status": "completed",
+        "message": "Tool invocation completed.",
         "endpoint": f"{settings.public_base_url}/ws/{workspace.name}/mcp",
-        "params_received": params,
+        "params_received": runtime_params,
+        "result": parsed_result,
     }
 
     return api_response(result)

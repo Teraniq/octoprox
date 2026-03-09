@@ -1,4 +1,5 @@
 from __future__ import annotations
+# pyright: reportMissingTypeArgument=false
 
 import logging
 from datetime import datetime, timedelta, timezone
@@ -15,6 +16,7 @@ from .provisioning import WorkspaceProvisioner
 logger = logging.getLogger(__name__)
 
 WORKSPACE_NAME_RE = re.compile(r"^[a-zA-Z0-9._-]{1,128}$")
+CAPABILITY_CLAIMS_SCHEMA_VERSION = "v1"
 
 
 def validate_workspace_name(db: Session, name: str) -> tuple[bool, str]:
@@ -185,7 +187,61 @@ def deactivate_user(
         )
 
 
-def introspect_token(db: Session, token: str) -> dict:
+def build_capability_claims(
+    user: User | None,
+    *,
+    subject_id: str | None = None,
+    subject_name: str | None = None,
+) -> dict[str, Any]:
+    resolved_subject_id = subject_id or (str(user.id) if user else "")
+    resolved_subject_name = (
+        user.username if user else (subject_name or resolved_subject_id)
+    )
+    return {
+        "schema_version": CAPABILITY_CLAIMS_SCHEMA_VERSION,
+        "subject": {
+            "kind": "user",
+            "id": resolved_subject_id,
+            "name": resolved_subject_name,
+        },
+        "group_ids": [],
+        "role_template_keys": [],
+        "policy_version": 0,
+        "snapshot_id": None,
+        "provider_bindings": [],
+        "gitlab_identity": {
+            "user_id": None,
+            "username": None,
+            "auth_ref": None,
+        },
+        "trace_defaults": {
+            "policy_authority": None,
+            "attributes": {},
+        },
+    }
+
+
+def build_active_introspection_response(
+    user: User | None,
+    *,
+    role: str | None = None,
+    subject_id: str | None = None,
+    subject_name: str | None = None,
+) -> dict[str, Any]:
+    resolved_user_id = str(user.id) if user else subject_id
+    return {
+        "active": True,
+        "user_id": resolved_user_id,
+        "role": role or (user.role if user else None),
+        "claims": build_capability_claims(
+            user,
+            subject_id=subject_id,
+            subject_name=subject_name,
+        ),
+    }
+
+
+def introspect_token(db: Session, token: str) -> dict[str, Any]:
     prefix = auth.extract_prefix(token)
     if not prefix:
         return {"active": False}
@@ -194,7 +250,7 @@ def introspect_token(db: Session, token: str) -> dict:
         if auth.verify_api_key_hash(token, key.key_hash):
             if key.user.status != "active":
                 return {"active": False}
-            return {"active": True, "user_id": str(key.user_id), "role": key.user.role}
+            return build_active_introspection_response(key.user)
     return {"active": False}
 
 

@@ -1,4 +1,5 @@
 """Git tools for version control operations."""
+
 from __future__ import annotations
 
 import os
@@ -7,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..auth import _require_owner
 from ..path_utils import WORKSPACE_ROOT
+from .catalog import catalog_tool
 
 if TYPE_CHECKING:
     from .. import OctoproxMCP
@@ -14,89 +16,217 @@ if TYPE_CHECKING:
 
 # Whitelist of allowed git commands and their permitted arguments
 ALLOWED_GIT_COMMANDS: dict[str, dict[str, Any]] = {
-    'clone': {
-        'max_args': 10,
-        'allowed_prefixes': ['--depth=', '--branch=', '--single-branch', '--no-single-branch',
-                             '--shallow-submodules', '--recurse-submodules', '--jobs=',
-                             '--origin=', '--config=', '--'],
+    "clone": {
+        "max_args": 10,
+        "allowed_prefixes": [
+            "--depth=",
+            "--branch=",
+            "--single-branch",
+            "--no-single-branch",
+            "--shallow-submodules",
+            "--recurse-submodules",
+            "--jobs=",
+            "--origin=",
+            "--config=",
+            "--",
+        ],
     },
-    'pull': {
-        'max_args': 5,
-        'allowed_prefixes': ['--ff-only', '--no-rebase', '--rebase', '--autostash',
-                             '--no-autostash', '--depth=', '--unshallow'],
+    "pull": {
+        "max_args": 5,
+        "allowed_prefixes": [
+            "--ff-only",
+            "--no-rebase",
+            "--rebase",
+            "--autostash",
+            "--no-autostash",
+            "--depth=",
+            "--unshallow",
+        ],
     },
-    'fetch': {
-        'max_args': 10,
-        'allowed_prefixes': ['--all', '--prune', '--prune-tags', '--depth=', '--unshallow',
-                             '--force', '--tags', '--no-tags'],
+    "fetch": {
+        "max_args": 10,
+        "allowed_prefixes": [
+            "--all",
+            "--prune",
+            "--prune-tags",
+            "--depth=",
+            "--unshallow",
+            "--force",
+            "--tags",
+            "--no-tags",
+        ],
     },
-    'status': {
-        'max_args': 5,
-        'allowed_prefixes': ['--short', '--branch', '--porcelain', '--untracked-files=',
-                             '--ignored'],
+    "status": {
+        "max_args": 5,
+        "allowed_prefixes": [
+            "--short",
+            "--branch",
+            "--porcelain",
+            "--untracked-files=",
+            "--ignored",
+        ],
     },
-    'log': {
-        'max_args': 10,
-        'allowed_prefixes': ['--oneline', '--max-count=', '--since=', '--until=',
-                             '--author=', '--grep=', '--all', '--graph', '--decorate'],
+    "log": {
+        "max_args": 10,
+        "allowed_prefixes": [
+            "--oneline",
+            "--max-count=",
+            "--since=",
+            "--until=",
+            "--author=",
+            "--grep=",
+            "--all",
+            "--graph",
+            "--decorate",
+        ],
     },
-    'diff': {
-        'max_args': 10,
-        'allowed_prefixes': ['--cached', '--staged', '--stat', '--numstat', '--name-only',
-                             '--name-status', '--check'],
+    "diff": {
+        "max_args": 10,
+        "allowed_prefixes": [
+            "--cached",
+            "--staged",
+            "--stat",
+            "--numstat",
+            "--name-only",
+            "--name-status",
+            "--check",
+        ],
     },
-    'show': {
-        'max_args': 5,
-        'allowed_prefixes': ['--stat', '--name-only', '--format=', '--quiet'],
+    "show": {
+        "max_args": 5,
+        "allowed_prefixes": ["--stat", "--name-only", "--format=", "--quiet"],
     },
-    'branch': {
-        'max_args': 10,
-        'allowed_prefixes': ['--list', '--all', '--remote', '--merged', '--no-merged',
-                             '--contains=', '--format=', '-d', '-D', '-m', '-M'],
+    "branch": {
+        "max_args": 10,
+        "allowed_prefixes": [
+            "--list",
+            "--all",
+            "--remote",
+            "--merged",
+            "--no-merged",
+            "--contains=",
+            "--format=",
+            "-d",
+            "-D",
+            "-m",
+            "-M",
+        ],
     },
-    'checkout': {
-        'max_args': 5,
-        'allowed_prefixes': ['-b', '-B', '--track', '--no-track', '--orphan',
-                             '--ours', '--theirs', '--merge', '-f', '--force'],
+    "checkout": {
+        "max_args": 5,
+        "allowed_prefixes": [
+            "-b",
+            "-B",
+            "--track",
+            "--no-track",
+            "--orphan",
+            "--ours",
+            "--theirs",
+            "--merge",
+            "-f",
+            "--force",
+        ],
     },
-    'add': {
-        'max_args': 50,
-        'allowed_prefixes': ['-A', '--all', '-u', '--update', '-f', '--force', '-n', '--dry-run'],
+    "add": {
+        "max_args": 50,
+        "allowed_prefixes": [
+            "-A",
+            "--all",
+            "-u",
+            "--update",
+            "-f",
+            "--force",
+            "-n",
+            "--dry-run",
+        ],
     },
-    'reset': {
-        'max_args': 5,
-        'allowed_prefixes': ['--soft', '--mixed', '--hard', '--keep', '--merge',
-                             '--', 'HEAD', 'HEAD~'],
+    "reset": {
+        "max_args": 5,
+        "allowed_prefixes": [
+            "--soft",
+            "--mixed",
+            "--hard",
+            "--keep",
+            "--merge",
+            "--",
+            "HEAD",
+            "HEAD~",
+        ],
     },
-    'commit': {
-        'max_args': 10,
-        'allowed_prefixes': ['-m', '--message=', '--amend', '--no-edit', '--all', '-a',
-                             '--signoff', '--no-verify'],
+    "commit": {
+        "max_args": 10,
+        "allowed_prefixes": [
+            "-m",
+            "--message=",
+            "--amend",
+            "--no-edit",
+            "--all",
+            "-a",
+            "--signoff",
+            "--no-verify",
+        ],
     },
-    'push': {
-        'max_args': 10,
-        'allowed_prefixes': ['--all', '--tags', '--force', '-f', '--force-with-lease',
-                             '--set-upstream', '-u', '--delete', '-d'],
+    "push": {
+        "max_args": 10,
+        "allowed_prefixes": [
+            "--all",
+            "--tags",
+            "--force",
+            "-f",
+            "--force-with-lease",
+            "--set-upstream",
+            "-u",
+            "--delete",
+            "-d",
+        ],
     },
-    'remote': {
-        'max_args': 10,
-        'allowed_prefixes': ['-v', '--verbose', 'add', 'remove', 'rm', 'rename',
-                             'set-url', 'get-url', 'show', 'prune'],
+    "remote": {
+        "max_args": 10,
+        "allowed_prefixes": [
+            "-v",
+            "--verbose",
+            "add",
+            "remove",
+            "rm",
+            "rename",
+            "set-url",
+            "get-url",
+            "show",
+            "prune",
+        ],
     },
-    'config': {
-        'max_args': 5,
-        'allowed_prefixes': ['--global', '--local', '--system', '--list', '--get',
-                             '--add', '--unset', 'user.name', 'user.email', 'core.',
-                             'remote.', 'branch.', 'credential.'],
+    "config": {
+        "max_args": 5,
+        "allowed_prefixes": [
+            "--global",
+            "--local",
+            "--system",
+            "--list",
+            "--get",
+            "--add",
+            "--unset",
+            "user.name",
+            "user.email",
+            "core.",
+            "remote.",
+            "branch.",
+            "credential.",
+        ],
     },
-    'init': {
-        'max_args': 5,
-        'allowed_prefixes': ['--bare', '--quiet', '-q', '--initial-branch=', '--shared'],
+    "init": {
+        "max_args": 5,
+        "allowed_prefixes": [
+            "--bare",
+            "--quiet",
+            "-q",
+            "--initial-branch=",
+            "--shared",
+        ],
     },
 }
 
 # Characters that could be used for shell injection
-SHELL_INJECTION_CHARS = set(';|&$`\n\r<>!{}[]')
+SHELL_INJECTION_CHARS = set(";|&$`\n\r<>!{}[]")
 
 
 def _validate_git_args(command: str, args: list[str]) -> None:
@@ -105,15 +235,19 @@ def _validate_git_args(command: str, args: list[str]) -> None:
     Raises ValueError if any argument is not allowed.
     """
     if command not in ALLOWED_GIT_COMMANDS:
-        raise ValueError(f"Git command '{command}' is not in the allowed whitelist. "
-                        f"Allowed commands: {list(ALLOWED_GIT_COMMANDS.keys())}")
+        raise ValueError(
+            f"Git command '{command}' is not in the allowed whitelist. "
+            f"Allowed commands: {list(ALLOWED_GIT_COMMANDS.keys())}"
+        )
 
     config = ALLOWED_GIT_COMMANDS[command]
-    max_args = config['max_args']
-    allowed_prefixes = config['allowed_prefixes']
+    max_args = config["max_args"]
+    allowed_prefixes = config["allowed_prefixes"]
 
     if len(args) > max_args:
-        raise ValueError(f"Too many arguments for '{command}': {len(args)} > {max_args}")
+        raise ValueError(
+            f"Too many arguments for '{command}': {len(args)} > {max_args}"
+        )
 
     for arg in args:
         # Check for shell injection characters
@@ -121,34 +255,44 @@ def _validate_git_args(command: str, args: list[str]) -> None:
             raise ValueError(f"Argument contains invalid characters: {arg[:50]}")
 
         # Check for command substitution attempts
-        if '$(' in arg or '`' in arg:
+        if "$(" in arg or "`" in arg:
             raise ValueError(f"Argument contains command substitution: {arg[:50]}")
 
         # Check argument against allowed prefixes
         # Special case: file paths (anything not starting with -)
-        if not arg.startswith('-'):
+        if not arg.startswith("-"):
             # This is likely a file path or ref name - allow it
             # but still check for injection patterns
-            if '..' in arg and '...' not in arg:
+            if ".." in arg and "..." not in arg:
                 # Could be path traversal - check it's not trying to escape
-                if '../' in arg or '..\\' in arg:
+                if "../" in arg or "..\\" in arg:
                     raise ValueError(f"Path traversal detected in argument: {arg[:50]}")
             continue
 
         # Check if argument starts with any allowed prefix
         is_allowed = any(
-            arg == prefix or arg.startswith(prefix)
-            for prefix in allowed_prefixes
+            arg == prefix or arg.startswith(prefix) for prefix in allowed_prefixes
         )
         if not is_allowed:
-            raise ValueError(f"Argument not allowed for '{command}': {arg[:50]}. "
-                           f"Allowed prefixes: {allowed_prefixes}")
+            raise ValueError(
+                f"Argument not allowed for '{command}': {arg[:50]}. "
+                f"Allowed prefixes: {allowed_prefixes}"
+            )
 
 
 def register_git_tools(mcp: "OctoproxMCP") -> None:
     """Register git tools with the MCP server."""
 
-    @mcp.tool()
+    @catalog_tool(
+        mcp,
+        tool_id="git",
+        provider="octoprox",
+        tool_class="git",
+        operations=("status", "diff", "log", "clone", "commit", "push", "branch"),
+        risk_class="high",
+        supports_readonly=False,
+        evidence_kind="git_command",
+    )
     def git(args: list[str], timeout_s: int = 120) -> dict[str, Any]:
         """Execute git commands within the workspace.
 
@@ -176,7 +320,10 @@ def register_git_tools(mcp: "OctoproxMCP") -> None:
         env = os.environ.copy()
         env["HOME"] = str(WORKSPACE_ROOT / ".home")
         env["GIT_TERMINAL_PROMPT"] = "0"
-        env["GIT_SSH_COMMAND"] = "ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=" + str(WORKSPACE_ROOT / ".ssh" / "known_hosts")
+        env["GIT_SSH_COMMAND"] = (
+            "ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile="
+            + str(WORKSPACE_ROOT / ".ssh" / "known_hosts")
+        )
 
         result = subprocess.run(
             cmd,

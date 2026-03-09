@@ -1,7 +1,9 @@
 """GitLab tools for API integration."""
+
 from __future__ import annotations
 
 import base64
+import binascii
 import json
 from typing import TYPE_CHECKING, Any
 
@@ -11,6 +13,7 @@ from cachetools import TTLCache
 
 from ..auth import _require_owner
 from ..config import GITLAB_BASE_URL, GITLAB_OPENAPI_URL, GITLAB_TOKEN
+from .catalog import catalog_tool
 
 if TYPE_CHECKING:
     from .. import OctoproxMCP
@@ -77,7 +80,9 @@ def _load_gitlab_spec(spec_url: str, refresh: bool = False) -> dict[str, Any]:
     return payload
 
 
-def _build_gitlab_files(files: list[dict[str, str]] | None) -> list[tuple[str, tuple[str, bytes, str]]] | None:
+def _build_gitlab_files(
+    files: list[dict[str, str]] | None,
+) -> list[tuple[str, tuple[str, bytes, str]]] | None:
     """Build files payload for multipart requests."""
     if not files:
         return None
@@ -88,10 +93,12 @@ def _build_gitlab_files(files: list[dict[str, str]] | None) -> list[tuple[str, t
         data = entry.get("data_base64")
         content_type = entry.get("content_type", "application/octet-stream")
         if not name or not filename or not data:
-            raise ValueError("Each file entry requires name, filename, and data_base64 fields.")
+            raise ValueError(
+                "Each file entry requires name, filename, and data_base64 fields."
+            )
         try:
             payload = base64.b64decode(data)
-        except (base64.binascii.Error, ValueError) as exc:
+        except (binascii.Error, ValueError) as exc:
             raise ValueError("Invalid base64 in files payload.") from exc
         built.append((name, (filename, payload, content_type)))
     return built
@@ -100,11 +107,19 @@ def _build_gitlab_files(files: list[dict[str, str]] | None) -> list[tuple[str, t
 def register_gitlab_tools(mcp: "OctoproxMCP") -> None:
     """Register GitLab tools with the MCP server."""
 
-    @mcp.tool(
+    @catalog_tool(
+        mcp,
+        tool_id="gitlab_request",
+        provider="octoprox",
+        tool_class="gitlab",
+        operations=("request", "read", "write"),
+        risk_class="high",
+        supports_readonly=False,
+        evidence_kind="http_exchange",
         description=(
             "Proxy any GitLab REST API request. Provide endpoint, token, and path; optionally "
             "pass params/json/form/files and request base64 for binary responses."
-        )
+        ),
     )
     def gitlab_request(
         endpoint: str,
@@ -173,7 +188,15 @@ def register_gitlab_tools(mcp: "OctoproxMCP") -> None:
                 payload["json"] = None
         return payload
 
-    @mcp.tool(
+    @catalog_tool(
+        mcp,
+        tool_id="gitlab_openapi_spec",
+        provider="octoprox",
+        tool_class="gitlab",
+        operations=("discover", "inspect"),
+        risk_class="low",
+        supports_readonly=True,
+        evidence_kind="openapi_spec",
         name="gitlab_openapi_spec",
         description=(
             "Return the GitLab OpenAPI YAML (chunked). Use for deep schema context; cacheable "
@@ -208,7 +231,15 @@ def register_gitlab_tools(mcp: "OctoproxMCP") -> None:
             "text": chunk.decode("utf-8", errors="replace"),
         }
 
-    @mcp.tool(
+    @catalog_tool(
+        mcp,
+        tool_id="gitlab_openapi_paths",
+        provider="octoprox",
+        tool_class="gitlab",
+        operations=("discover", "list"),
+        risk_class="low",
+        supports_readonly=True,
+        evidence_kind="openapi_index",
         name="gitlab_openapi_paths",
         description=(
             "List GitLab OpenAPI paths and methods, with optional filtering and pagination "
@@ -245,7 +276,9 @@ def register_gitlab_tools(mcp: "OctoproxMCP") -> None:
             for method, detail in methods.items():
                 summary = ""
                 if isinstance(detail, dict):
-                    summary = str(detail.get("summary") or detail.get("description") or "")
+                    summary = str(
+                        detail.get("summary") or detail.get("description") or ""
+                    )
                 record = {"path": path, "method": method.upper(), "summary": summary}
                 if filter_value:
                     haystack = f"{path} {method} {summary}".lower()
@@ -256,7 +289,15 @@ def register_gitlab_tools(mcp: "OctoproxMCP") -> None:
         sliced = entries[offset : offset + limit]
         return {"total": total, "offset": offset, "limit": limit, "entries": sliced}
 
-    @mcp.tool(
+    @catalog_tool(
+        mcp,
+        tool_id="gitlab_openapi_operation",
+        provider="octoprox",
+        tool_class="gitlab",
+        operations=("discover", "inspect"),
+        risk_class="low",
+        supports_readonly=True,
+        evidence_kind="openapi_operation",
         name="gitlab_openapi_operation",
         description=(
             "Return schema details (parameters, requestBody, responses) for a GitLab OpenAPI "
@@ -295,7 +336,15 @@ def register_gitlab_tools(mcp: "OctoproxMCP") -> None:
             "responses": operation.get("responses"),
         }
 
-    @mcp.tool(
+    @catalog_tool(
+        mcp,
+        tool_id="gitlab_tool_help",
+        provider="octoprox",
+        tool_class="gitlab",
+        operations=("help", "discover"),
+        risk_class="low",
+        supports_readonly=True,
+        evidence_kind="help",
         name="gitlab_tool_help",
         description=(
             "Return machine-readable help for GitLab MCP tools, including usage guidance and examples."
@@ -313,7 +362,13 @@ def register_gitlab_tools(mcp: "OctoproxMCP") -> None:
             "tools": {
                 "gitlab_openapi_paths": {
                     "purpose": "Search and list available GitLab REST endpoints.",
-                    "inputs": ["spec_url?", "filter_text?", "limit?", "offset?", "refresh?"],
+                    "inputs": [
+                        "spec_url?",
+                        "filter_text?",
+                        "limit?",
+                        "offset?",
+                        "refresh?",
+                    ],
                     "output": "entries[{path, method, summary}], plus pagination metadata.",
                     "example": {"filter_text": "issues", "limit": 20},
                 },

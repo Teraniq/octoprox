@@ -10,7 +10,8 @@ import os
 import re
 import sys
 import pathlib
-from typing import Iterator
+from typing import Iterator, cast
+from unittest.mock import patch
 
 # Set required environment variables before any imports
 os.environ.setdefault("BOOTSTRAP_ADMIN_USERNAME", "test_admin")
@@ -37,6 +38,7 @@ from app.main import (
     rate_limit_storage,
 )
 from app.models import ApiKey, User, Workspace
+from app.provisioning import WorkspaceProvisioner
 
 
 # =============================================================================
@@ -71,7 +73,7 @@ class FakeProvisioner:
 
 
 @pytest.fixture
-def test_db() -> Session:
+def test_db() -> Iterator[Session]:
     """Create a test database session."""
     engine = create_engine(
         "sqlite:///:memory:",
@@ -273,8 +275,12 @@ class TestUserLifecycle:
         test_db.refresh(user2)
 
         # Create workspaces for each user
-        ws1 = services.create_workspace(test_db, provisioner, user1, "user1-ws")
-        ws2 = services.create_workspace(test_db, provisioner, user2, "user2-ws")
+        ws1 = services.create_workspace(
+            test_db, cast(WorkspaceProvisioner, provisioner), user1, "user1-ws"
+        )
+        ws2 = services.create_workspace(
+            test_db, cast(WorkspaceProvisioner, provisioner), user2, "user2-ws"
+        )
 
         # Login as user1 and verify only see own workspace
         login_user(client, user1.username, "pass1")
@@ -345,14 +351,29 @@ class TestWorkspaceLifecycle:
         response = client.get(f"/api/v1/mcp/tools?workspace_id={ws_id}")
         assert response.status_code == 200
 
-        response = client.post(
-            "/api/v1/mcp/invoke",
-            json={
-                "workspace_id": ws_id,
-                "tool": "read_file",
-                "params": {"path": "/test"},
-            },
-        )
+        with patch(
+            "app.main._workspace_mcp_json_request",
+            return_value=(
+                200,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "lifecycle",
+                    "result": {
+                        "content": [
+                            {"type": "text", "text": '{"path":"/test","content":"ok"}'}
+                        ]
+                    },
+                },
+            ),
+        ):
+            response = client.post(
+                "/api/v1/mcp/invoke",
+                json={
+                    "workspace_id": ws_id,
+                    "tool": "fs_read_text",
+                    "params": {"path": "/test"},
+                },
+            )
         assert response.status_code == 200
 
         # Step 5: Delete the workspace
@@ -360,8 +381,9 @@ class TestWorkspaceLifecycle:
         assert response.status_code == 200
 
         # Verify workspace is marked as deleted
-        test_db.refresh(test_db.query(Workspace).filter_by(id=ws_id).first())
         ws = test_db.query(Workspace).filter_by(id=ws_id).first()
+        assert ws is not None
+        test_db.refresh(ws)
         assert ws.status == "deleted"
 
         # Step 6: Verify deleted workspace not in list
@@ -432,7 +454,9 @@ class TestWorkspaceLifecycle:
         test_db.refresh(user)
 
         # Create workspace as user
-        ws = services.create_workspace(test_db, provisioner, user, "user-workspace")
+        ws = services.create_workspace(
+            test_db, cast(WorkspaceProvisioner, provisioner), user, "user-workspace"
+        )
 
         # Login as admin
         login_user(client, admin.username, "adminpass")
@@ -708,7 +732,9 @@ class TestCrossResourceLifecycle:
         test_db.refresh(user)
 
         # Create workspace for user
-        ws = services.create_workspace(test_db, provisioner, user, "cleanup-ws")
+        ws = services.create_workspace(
+            test_db, cast(WorkspaceProvisioner, provisioner), user, "cleanup-ws"
+        )
 
         # Verify workspace exists and is active
         assert ws.status == "active"
@@ -1071,3 +1097,56 @@ class TestRateLimiting:
                 200,
                 429,
             ]  # May or may not be rate limited depending on config
+
+    def test_invoke_mcp_tool_accepts_parameters_alias(
+        self, client: TestClient, test_db: Session
+    ) -> None:
+        user = User(
+            username="aliasuser",
+            password_hash=auth.hash_password("aliaspass"),
+            role="user",
+            status="active",
+        )
+        test_db.add(user)
+        test_db.commit()
+        test_db.refresh(user)
+
+        login_user(client, user.username, "aliaspass")
+        response = client.post(
+            "/api/v1/workspaces",
+            json={"name": "alias-workspace"},
+        )
+        assert response.status_code == 201, response.text
+        workspace_id = response.json()["data"]["id"]
+
+        with patch(
+            "app.main._workspace_mcp_json_request",
+            return_value=(
+                200,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "alias",
+                    "result": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": '{"path":"/alias.txt","content":"ok"}',
+                            }
+                        ]
+                    },
+                },
+            ),
+        ):
+            response = client.post(
+                "/api/v1/mcp/invoke",
+                json={
+                    "workspace_id": workspace_id,
+                    "tool": "fs_read_text",
+                    "parameters": {"path": "/alias.txt"},
+                },
+            )
+
+        assert response.status_code == 200, response.text
+        data = response.json()["data"]
+        assert data["status"] == "completed"
+        assert data["params_received"] == {"path": "/alias.txt"}

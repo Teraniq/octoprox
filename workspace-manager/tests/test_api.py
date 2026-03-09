@@ -17,7 +17,7 @@ import re
 import sys
 import pathlib
 from datetime import datetime, timedelta, timezone
-from typing import Iterator
+from typing import Iterator, cast
 from unittest.mock import MagicMock, patch
 
 # Set required environment variables before any imports
@@ -80,7 +80,7 @@ class FakeProvisioner:
 
 
 @pytest.fixture
-def test_db() -> Session:
+def test_db() -> Iterator[Session]:
     """Create a test database session."""
     engine = create_engine(
         "sqlite:///:memory:",
@@ -158,7 +158,9 @@ def test_api_key(test_db: Session, test_user: User) -> dict:
 def test_workspace(test_db: Session, test_user: User) -> Workspace:
     """Create a test workspace for the test user."""
     provisioner = FakeProvisioner()
-    ws = services.create_workspace(test_db, provisioner, test_user, "test-ws")
+    ws = services.create_workspace(
+        test_db, cast(WorkspaceProvisioner, provisioner), test_user, "test-ws"
+    )
     return ws
 
 
@@ -166,7 +168,9 @@ def test_workspace(test_db: Session, test_user: User) -> Workspace:
 def admin_workspace(test_db: Session, test_admin: User) -> Workspace:
     """Create a test workspace for the admin user."""
     provisioner = FakeProvisioner()
-    ws = services.create_workspace(test_db, provisioner, test_admin, "admin-ws")
+    ws = services.create_workspace(
+        test_db, cast(WorkspaceProvisioner, provisioner), test_admin, "admin-ws"
+    )
     return ws
 
 
@@ -602,7 +606,9 @@ class TestWorkspaceAPI:
         """Owner can delete workspace."""
         # Create a workspace to delete
         provisioner = FakeProvisioner()
-        ws = services.create_workspace(test_db, provisioner, test_user, "ws-to-delete")
+        ws = services.create_workspace(
+            test_db, cast(WorkspaceProvisioner, provisioner), test_user, "ws-to-delete"
+        )
 
         login_user(client, test_user.username, "testpass")
         response = client.delete(f"/api/v1/workspaces/{ws.id}")
@@ -616,7 +622,10 @@ class TestWorkspaceAPI:
         # Create a workspace owned by test_user
         provisioner = FakeProvisioner()
         ws = services.create_workspace(
-            test_db, provisioner, test_user, "ws-for-admin-delete"
+            test_db,
+            cast(WorkspaceProvisioner, provisioner),
+            test_user,
+            "ws-for-admin-delete",
         )
 
         login_user(client, test_admin.username, "adminpass")
@@ -898,6 +907,18 @@ class TestMCPBridge:
         data = response.json()
         assert "tools" in data["data"]
         assert len(data["data"]["tools"]) > 0
+        tool = data["data"]["tools"][0]
+        for field in (
+            "tool_id",
+            "provider",
+            "tool_class",
+            "operations",
+            "risk_class",
+            "required_claims",
+            "supports_readonly",
+            "evidence_kind",
+        ):
+            assert field in tool
 
     def test_list_mcp_tools_with_workspace_id(
         self, client: TestClient, test_user: User, test_workspace: Workspace
@@ -931,7 +952,7 @@ class TestMCPBridge:
         response = client.post("/api/v1/mcp/invoke", json={"tool": "read_file"})
         assert response.status_code == 400, f"Expected 400, got {response.status_code}"
 
-    def test_invoke_mcp_tool_validates_tool_name(
+    def test_invoke_mcp_tool_unknown_tool(
         self, client: TestClient, test_user: User, test_workspace: Workspace
     ) -> None:
         """MCP invoke validates tool name."""
@@ -942,7 +963,7 @@ class TestMCPBridge:
         )
         assert response.status_code == 400, f"Expected 400, got {response.status_code}"
 
-    def test_invoke_mcp_tool_checks_permissions(
+    def test_invoke_mcp_tool_non_owner_denied(
         self, client: TestClient, test_user: User, admin_workspace: Workspace
     ) -> None:
         """MCP invoke checks permissions."""
@@ -958,18 +979,41 @@ class TestMCPBridge:
     ) -> None:
         """MCP invoke succeeds with valid params."""
         login_user(client, test_user.username, "testpass")
-        response = client.post(
-            "/api/v1/mcp/invoke",
-            json={
-                "workspace_id": test_workspace.id,
-                "tool": "read_file",
-                "params": {"path": "/test.txt"},
-            },
-        )
+        with patch(
+            "app.main._workspace_mcp_json_request",
+            return_value=(
+                200,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "abc123",
+                    "result": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": '{"path":"/test.txt","content":"hello"}',
+                            }
+                        ]
+                    },
+                },
+            ),
+        ):
+            response = client.post(
+                "/api/v1/mcp/invoke",
+                json={
+                    "workspace_id": test_workspace.id,
+                    "tool": "fs_read_text",
+                    "params": {"path": "/test.txt"},
+                },
+            )
         assert response.status_code == 200, f"Invoke failed: {response.text}"
         data = response.json()
-        assert data["data"]["tool"] == "read_file"
+        assert data["data"]["tool"] == "fs_read_text"
+        assert data["data"]["status"] == "completed"
         assert "endpoint" in data["data"]
+        assert data["data"]["result"]["content"] == {
+            "path": "/test.txt",
+            "content": "hello",
+        }
 
     def test_invoke_mcp_tool_on_nonexistent_workspace_returns_404(
         self, client: TestClient, test_user: User
@@ -981,6 +1025,44 @@ class TestMCPBridge:
             json={"workspace_id": 99999, "tool": "read_file"},
         )
         assert response.status_code == 404, f"Expected 404, got {response.status_code}"
+
+    def test_tool_recommendation_endpoint(
+        self, client: TestClient, test_user: User, test_workspace: Workspace
+    ) -> None:
+        login_user(client, test_user.username, "testpass")
+        response = client.post(
+            "/api/v1/mcp/tool-recommendations",
+            json={
+                "workspace_id": test_workspace.id,
+                "intent": "inspect git history and repository status",
+                "allowed_tool_classes": ["git"],
+            },
+        )
+        assert response.status_code == 200, response.text
+        data = response.json()["data"]
+        assert data["status"] == "ok"
+        assert data["selected_tool"] == "git"
+        assert data["recommendations"][0]["tool_class"] == "git"
+
+    def test_tool_request_escalation_payload(
+        self, client: TestClient, test_user: User, test_workspace: Workspace
+    ) -> None:
+        login_user(client, test_user.username, "testpass")
+        response = client.post(
+            "/api/v1/mcp/tool-recommendations",
+            json={
+                "workspace_id": test_workspace.id,
+                "intent": "browse the web for release notes",
+                "allowed_tool_classes": ["git"],
+                "allowed_providers": ["octoprox"],
+            },
+        )
+        assert response.status_code == 200, response.text
+        data = response.json()["data"]
+        assert data["status"] == "denied"
+        denial = data["denial"]
+        assert denial["error_code"] == "tool_request_denied"
+        assert denial["tool_request"]["issue_type"] == "tool-request"
 
 
 # =============================================================================

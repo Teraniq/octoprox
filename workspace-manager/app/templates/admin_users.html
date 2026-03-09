@@ -1,53 +1,118 @@
 {% extends "base.html" %}
 {% block content %}
-<h2>Users</h2>
-{% if message %}
-<div class="message">{{ message }}</div>
-{% endif %}
-<form method="post" action="/admin/users">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-  <label>Username</label>
-  <input type="text" name="username" required />
-  <label>Password</label>
-  <input type="password" name="password" required />
-  <label>Role</label>
-  <select name="role">
-    <option value="user">User</option>
-    <option value="admin">Admin</option>
-  </select>
-  <button type="submit">Create</button>
-</form>
-<table>
-  <thead>
-    <tr>
-      <th>Username</th>
-      <th>Role</th>
-      <th>Status</th>
-      <th>Created</th>
-      <th>Actions</th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for usr in users %}
-    <tr>
-      <td>{{ usr.username }}</td>
-      <td>{{ usr.role }}</td>
-      <td>{{ usr.status }}</td>
-      <td>{{ usr.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
-      <td class="actions">
-        <form
-          method="post"
-          action="/admin/users/{{ usr.id }}/deactivate"
-          onsubmit="return confirmDelete('Deactivate user {{ usr.username }}?')"
-        >
-          <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-          <button class="danger" type="submit" {% if usr.status == "inactive" %}disabled{% endif %}>
-            Deactivate
-          </button>
-        </form>
-      </td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
+{% set admin_count = users | selectattr('role', 'equalto', 'admin') | list | length %}
+<div class="summary-grid">
+  <div class="summary-card">
+    <span class="summary-label">Total users</span>
+    <strong>{{ users | length }}</strong>
+    <p>Active and inactive identities.</p>
+  </div>
+  <div class="summary-card">
+    <span class="summary-label">Admins</span>
+    <strong>{{ admin_count }}</strong>
+    <p>Accounts with elevated permissions.</p>
+  </div>
+</div>
+<div class="status-row">
+  {% if message %}
+  <div class="message">{{ message }}</div>
+  {% endif %}
+</div>
+<div class="safety-banner safety-banner--warning" role="status" aria-live="polite">
+  <strong>Solemn access control</strong>
+  <p>Deactivating a user now opens the same inline overlay so you can verify role and status before cutting access.</p>
+</div>
+<div class="callout callout--confirmation" role="status" aria-live="polite">
+  <span class="callout-icon" aria-hidden="true">🧿</span>
+  <div>
+    <p class="callout-title">Deactivation guardrails</p>
+    <p>Inline confirmations keep you rooted in the story of the account and the panel pulses when it appears, so you can read the warning, type the username, and approve only when you’re sure the person should lose access.</p>
+    <p class="callout-hint">
+      Deactivations also drive the inline modal via `data-confirm-` metadata so the same `data-testid`
+      hooks (`delete-workspace-modal`, `confirm-workspace-name`, `danger-confirm-button`) keep the warning in view without a browser dialog before the update ships.
+    </p>
+  </div>
+</div>
+<section class="panel form-panel" aria-label="Create user">
+  <div class="section-head">
+    <div>
+      <p class="panel-badge">Invite</p>
+      <h3>Create a user</h3>
+    </div>
+    <p class="section-subtitle">Accounts are active immediately and can be deactivated at any time.</p>
+  </div>
+  <form method="post" action="/admin/users">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+    <div class="form-group">
+      <label>Username</label>
+      <input type="text" name="username" required />
+    </div>
+    <div class="form-group">
+      <label>Password</label>
+      <input type="password" name="password" required />
+    </div>
+    <div class="form-group">
+      <label>Role</label>
+      <select name="role">
+        <option value="user">User</option>
+        <option value="admin">Admin</option>
+      </select>
+    </div>
+    <div class="form-actions">
+      <button class="primary" type="submit">Create</button>
+    </div>
+  </form>
+  <p class="section-foot">Invites remain inline while the modal keeps sensitive changes intentional.</p>
+</section>
+<section class="panel table-panel" aria-label="User list">
+  <div class="section-head">
+    <div>
+      <p class="panel-badge panel-badge--ghost">Roster</p>
+      <h3>Administrators & users</h3>
+    </div>
+    <p class="section-subtitle">Deactivate access with a clear confirmation overlay.</p>
+  </div>
+  <div class="table-wrapper">
+    <table>
+      <thead>
+        <tr>
+          <th>Username</th>
+          <th>Role</th>
+          <th>Status</th>
+          <th>Created</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for usr in users %}
+        <tr>
+          <td>{{ usr.username }}</td>
+          <td>{{ usr.role }}</td>
+          <td>{{ usr.status }}</td>
+          <td>{{ usr.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+          <td class="actions">
+            <form
+              method="post"
+              action="/admin/users/{{ usr.id }}/deactivate"
+              data-confirm-message="Deactivate user {{ usr.username }}? Their session ends immediately and they cannot sign in until reactivated."
+              data-confirm-match="{{ usr.username }}"
+              data-confirm-title="Deactivate user"
+              data-confirm-tone="revocation"
+              data-confirm-action="Deactivate"
+              data-confirm-icon="🧿"
+              data-confirm-context="{{ usr.username }} will be locked out and cannot sign in until re-enabled."
+            >
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+              <button class="danger" type="submit" {% if usr.status == "inactive" %}disabled{% endif %}>
+                Deactivate
+              </button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="section-foot">Deactivate flows now open the inline overlay so the confirmation stays contextual and intentional before cutting access.</p>
+</section>
 {% endblock %}
